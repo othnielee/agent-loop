@@ -14,10 +14,14 @@ Scaffolding tool and templates for multi-agent development workflows. `agl` gene
 cd ~/your-project
 agl init add-auth --plan work/wip/task-1.md
 agw claude work/agent-loop/2026-02-17-142533-add-auth/prompts/01-worker.md
+git add -A && git commit -m "feat: add auth (worker)"
+agl track
 
 # Enhance
 agl enhance
 agw claude work/agent-loop/2026-02-17-142533-add-auth/prompts/02-enhancer.md
+git add -A && git commit -m "feat: add auth (enhancer)"
+agl track
 
 # Review (read-only)
 agl review --files "src/auth.rs, src/middleware.rs"
@@ -26,6 +30,8 @@ agw claude -r work/agent-loop/2026-02-17-142533-add-auth/prompts/03-reviewer.md
 # Fix
 agl fix
 agw claude work/agent-loop/2026-02-17-142533-add-auth/prompts/04-fixer.md
+git add -A && git commit -m "fix: auth review findings"
+agl track
 
 # Re-review (round 2)
 agl review
@@ -45,6 +51,7 @@ agl init <feature-slug> --plan <path>   Create loop dir, generate worker prompt
 agl enhance                             Generate enhancer prompt
 agl review                              Generate reviewer prompt
 agl fix                                 Generate fixer prompt
+agl track [hash]                        Record a commit hash (default: HEAD)
 ```
 
 ### Init Options
@@ -81,6 +88,13 @@ agl fix                                 Generate fixer prompt
 | `--dir <path>` | Loop directory (default: most recent) |
 | `--context <paths>` | Additional context paths |
 
+### Track Options
+
+| Option | Description |
+|--------|-------------|
+| `[hash]` | Commit hash to track (default: HEAD) |
+| `--dir <path>` | Loop directory (default: most recent) |
+
 ### Round Numbering
 
 The review-fix loop tracks rounds automatically. Round 1 files are named normally. Round 2+ get `-r2`, `-r3` suffixes:
@@ -93,6 +107,40 @@ prompts/04-fixer-r2.md      # round 2
 ```
 
 The round counter increments each time `agl fix` is called.
+
+### Commit Tracking
+
+`agl track` records commit hashes in `.agl` metadata. Tracked commits are automatically used as `{{COMMIT_HASHES}}` in enhance and review prompts when `--commits` is not explicitly provided.
+
+```bash
+agl track          # tracks HEAD
+agl track abc123   # tracks a specific hash
+```
+
+Amend detection: if the most recent tracked commit is no longer an ancestor of HEAD (e.g. you ran `git commit --amend`), `agl track` replaces it instead of appending. This keeps the commit list accurate without manual cleanup.
+
+```
+# .agl after three stages:
+COMMITS=a1b2c3,d4e5f6,g7h8i9
+```
+
+### Context Snapshotting
+
+`agl init` copies the plan file and any `--context` files into a `context/` directory inside the loop. All prompts reference these local copies, making loop directories self-contained records of the work.
+
+```bash
+agl init add-auth --plan work/wip/task-1.md --context "docs/spec.md, docs/design.md"
+```
+
+This creates:
+```
+context/
+├── plan.md       # copy of work/wip/task-1.md
+├── spec.md       # copy of docs/spec.md
+└── design.md     # copy of docs/design.md
+```
+
+If two `--context` files share the same basename, the second gets a `-2` suffix (e.g. `spec.md` and `spec-2.md`).
 
 ---
 
@@ -142,14 +190,14 @@ All templates use `{{PLACEHOLDER}}` syntax. `agl` fills these automatically:
 | `{{DATE}}` | Yes | `date +%Y-%m-%d` |
 | `{{FEATURE_SLUG}}` | Yes | User provides as arg to `init` |
 | `{{FEATURE_NAME}}` | Yes | Derived from slug |
-| `{{PLAN_PATH}}` | Yes | From `--plan` flag or `.agl` metadata |
+| `{{PLAN_PATH}}` | Yes | Local copy in `context/` (snapshotted from `--plan`) |
 | `{{OUTPUT_DIR}}` | Yes | Loop's `output/` directory |
 | `{{HANDOFF_PATH}}` | Yes | Computed from output dir |
 | `{{HANDOFF_PATHS}}` | Yes | Computed from what exists in output dir |
 | `{{REVIEW_PATH}}` | Yes | Latest review file in output dir |
 | `{{TASK_DESCRIPTION}}` | Yes | Default from plan path, or `--task` flag |
-| `{{OTHER_CONTEXT}}` | Flag | `--context`, default "None" |
-| `{{COMMIT_HASHES}}` | Flag | `--commits`, default "None" |
+| `{{OTHER_CONTEXT}}` | Flag | `--context` (init snapshots to `context/`), default "None" |
+| `{{COMMIT_HASHES}}` | Auto/Flag | Tracked commits from `.agl`, or `--commits` override |
 | `{{FILE_PATHS}}` | Flag | `--files`, default "None" |
 | `{{REVIEW_CHECKLIST}}` | Flag | `--checklist`, default "None" |
 | `{{ADDITIONAL_INSTRUCTIONS}}` | Flag | `--instructions`, default "None" |
@@ -163,7 +211,10 @@ Each loop creates a timestamped directory under `work/agent-loop/`:
 ```
 work/agent-loop/
 └── 2026-02-17-142533-add-auth/
-    ├── .agl                     # metadata (slug, plan, date, round)
+    ├── .agl                     # metadata (slug, plan, date, round, commits)
+    ├── context/
+    │   ├── plan.md              # snapshot of --plan file
+    │   └── design.md            # snapshot of --context files
     ├── prompts/
     │   ├── 01-worker.md
     │   ├── 02-enhancer.md

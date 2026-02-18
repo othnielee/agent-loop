@@ -74,7 +74,7 @@ fi
 # ------------------------------------------------------------
 # Create config file if it doesn't exist
 # ------------------------------------------------------------
-CONFIG_FILE="$HOME/.config/solt/deploy.toml"
+CONFIG_FILE="$HOME/.config/solt/agent-loop/deploy.toml"
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Creating default config at $CONFIG_FILE"
   ensure_dir "$(dirname "$CONFIG_FILE")"

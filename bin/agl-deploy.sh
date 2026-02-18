@@ -8,7 +8,7 @@ set -euo pipefail
 # and templates to ~/.config/solt/agent-loop/templates/.
 # ------------------------------------------------------------
 
-CONFIG_FILE="$HOME/.config/solt/deploy.toml"
+CONFIG_FILE="$HOME/.config/solt/agent-loop/deploy.toml"
 TEMPLATE_DEST="$HOME/.config/solt/agent-loop/templates"
 TARGET_SHEBANG='#!/usr/bin/env bash'
 

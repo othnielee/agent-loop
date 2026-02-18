@@ -215,11 +215,11 @@ This deploys:
 - `bin/agl.sh` -> `~/bin/agl`
 - `bin/agl-deploy.sh` -> `~/bin/agl-deploy`
 - `templates/*.md` -> `~/.config/solt/agent-loop/templates/`
-- Creates `~/.config/solt/deploy.toml` if it doesn't exist
+- Creates `~/.config/solt/agent-loop/deploy.toml` if it doesn't exist
 
 ### Updates
 
-After setting your PAT in `~/.config/solt/deploy.toml`:
+After setting your PAT in `~/.config/solt/agent-loop/deploy.toml`:
 
 ```bash
 agl-deploy

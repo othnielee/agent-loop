@@ -199,24 +199,79 @@ cmd_init() {
     die "Invalid feature slug '$slug'. Use lowercase alphanumeric with hyphens (e.g. add-auth-middleware)."
   fi
   [[ -z "$plan_path" ]] && die "--plan is required. Usage: agl init <feature-slug> --plan <path>"
+  [[ -f "$plan_path" ]] || die "Plan file not found: $plan_path"
 
-  local root date timestamp loop_dir prompts_dir output_dir
+  local root date timestamp loop_dir prompts_dir output_dir context_dir
   root="$(project_root)"
   date="$(date +%Y-%m-%d)"
   timestamp="$(date +%Y-%m-%d-%H%M%S)"
   loop_dir="$root/work/agent-loop/${timestamp}-${slug}"
   prompts_dir="$loop_dir/prompts"
   output_dir="$loop_dir/output"
+  context_dir="$loop_dir/context"
 
-  # Relative output dir (from project root)
+  # Relative paths (from project root)
   local rel_output_dir="${output_dir#$root/}"
+  local rel_context_dir="${context_dir#$root/}"
 
-  mkdir -p "$prompts_dir" "$output_dir"
+  mkdir -p "$prompts_dir" "$output_dir" "$context_dir"
 
-  # Write .agl metadata
+  # Snapshot plan into context/
+  local plan_base
+  plan_base="$(basename "$plan_path")"
+  local plan_dest
+  if [[ "$plan_base" == *.* ]]; then
+    plan_dest="plan.${plan_base##*.}"
+  else
+    plan_dest="plan"
+  fi
+  cp "$plan_path" "$context_dir/$plan_dest"
+  local rel_plan_path="$rel_context_dir/$plan_dest"
+
+  # Snapshot --context files into context/
+  local rel_context_paths="None"
+  if [[ "$other_context" != "None" ]]; then
+    rel_context_paths=""
+    local IFS=','
+    for ctx_path in $other_context; do
+      # Trim whitespace
+      ctx_path="$(printf '%s' "$ctx_path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      if [[ -f "$ctx_path" ]]; then
+        local ctx_base ctx_dest
+        ctx_base="$(basename "$ctx_path")"
+        ctx_dest="$ctx_base"
+        # Disambiguate if basename already exists in context/
+        if [[ -f "$context_dir/$ctx_dest" ]]; then
+          local name ext counter
+          if [[ "$ctx_base" == *.* ]]; then
+            name="${ctx_base%.*}"
+            ext=".${ctx_base##*.}"
+          else
+            name="$ctx_base"
+            ext=""
+          fi
+          counter=2
+          while [[ -f "$context_dir/${name}-${counter}${ext}" ]]; do
+            counter=$((counter + 1))
+          done
+          ctx_dest="${name}-${counter}${ext}"
+        fi
+        cp "$ctx_path" "$context_dir/$ctx_dest"
+        if [[ -n "$rel_context_paths" ]]; then
+          rel_context_paths="$rel_context_paths, $rel_context_dir/$ctx_dest"
+        else
+          rel_context_paths="$rel_context_dir/$ctx_dest"
+        fi
+      else
+        die "Context file not found: $ctx_path"
+      fi
+    done
+  fi
+
+  # Write .agl metadata (paths are relative to project root)
   cat > "$loop_dir/.agl" <<EOF
 FEATURE_SLUG=$slug
-PLAN_PATH=$plan_path
+PLAN_PATH=$rel_plan_path
 DATE=$date
 ROUND=1
 EOF
@@ -226,7 +281,7 @@ EOF
 
   # Default task description
   if [[ -z "$task_desc" ]]; then
-    task_desc="Implement the feature according to the plan at $plan_path."
+    task_desc="Implement the feature according to the plan."
   fi
 
   local template="$TEMPLATE_DIR/01-worker.md"
@@ -238,9 +293,9 @@ EOF
     -e "s|{{DATE}}|$(sed_escape "$date")|g" \
     -e "s|{{FEATURE_SLUG}}|$(sed_escape "$slug")|g" \
     -e "s|{{FEATURE_NAME}}|$(sed_escape "$feature_name")|g" \
-    -e "s|{{PLAN_PATH}}|$(sed_escape "$plan_path")|g" \
+    -e "s|{{PLAN_PATH}}|$(sed_escape "$rel_plan_path")|g" \
     -e "s|{{HANDOFF_PATHS}}|None|g" \
-    -e "s|{{OTHER_CONTEXT}}|$(sed_escape "$other_context")|g" \
+    -e "s|{{OTHER_CONTEXT}}|$(sed_escape "$rel_context_paths")|g" \
     -e "s|{{TASK_DESCRIPTION}}|$(sed_escape "$task_desc")|g" \
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$rel_output_dir")|g" \
     "$template" > "$prompt"

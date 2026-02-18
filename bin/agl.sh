@@ -22,6 +22,7 @@ Commands:
   enhance               Generate enhancer prompt
   review                Generate reviewer prompt
   fix                   Generate fixer prompt
+  track [hash]          Record a commit hash (default: HEAD)
 
 Init options:
   --plan <path>         Path to the plan file (required)
@@ -131,10 +132,21 @@ find_loop_dir() {
   echo "${latest%/}"
 }
 
-# Read a key from the .agl metadata file
+# Read a required key from the .agl metadata file. Dies if missing.
 read_meta() {
   local agl_file="$1" key="$2"
-  grep "^${key}=" "$agl_file" | head -1 | cut -d'=' -f2-
+  local value
+  value="$(grep "^${key}=" "$agl_file" 2>/dev/null | head -1 | cut -d'=' -f2- || true)"
+  if [[ -z "$value" ]]; then
+    die "Required key $key missing from $agl_file"
+  fi
+  printf '%s' "$value"
+}
+
+# Read an optional key from the .agl metadata file. Returns empty if missing.
+read_meta_optional() {
+  local agl_file="$1" key="$2"
+  grep "^${key}=" "$agl_file" 2>/dev/null | head -1 | cut -d'=' -f2- || true
 }
 
 # Print the prompt path and ready-to-run agw commands
@@ -263,6 +275,13 @@ cmd_enhance() {
   plan_path="$(read_meta "$agl_file" PLAN_PATH)"
   date="$(read_meta "$agl_file" DATE)"
 
+  # Use tracked commits if --commits not provided
+  if [[ "$commit_hashes" == "None" ]]; then
+    local tracked
+    tracked="$(read_meta_optional "$agl_file" COMMITS)"
+    [[ -n "$tracked" ]] && commit_hashes="$tracked"
+  fi
+
   local rel_output_dir="${loop_dir#$root/}/output"
   local handoff_path="$rel_output_dir/HANDOFF-${slug}.md"
   local feature_name
@@ -317,34 +336,46 @@ cmd_review() {
   date="$(read_meta "$agl_file" DATE)"
   round="$(read_meta "$agl_file" ROUND)"
 
+  # Use tracked commits if --commits not provided
+  if [[ "$commit_hashes" == "None" ]]; then
+    local tracked
+    tracked="$(read_meta_optional "$agl_file" COMMITS)"
+    [[ -n "$tracked" ]] && commit_hashes="$tracked"
+  fi
+
   local rel_output_dir="${loop_dir#$root/}/output"
   local feature_name
   feature_name="$(slug_to_name "$slug")"
 
-  # Compute handoff paths from what exists in output/
+  # Compute handoff paths scoped to what's relevant for this round
   local handoff_paths=""
   local output_abs="$loop_dir/output"
-  if [[ -f "$output_abs/HANDOFF-${slug}.md" ]]; then
-    handoff_paths="$rel_output_dir/HANDOFF-${slug}.md"
-  fi
-  if [[ -f "$output_abs/ENHANCE-${slug}.md" ]]; then
-    if [[ -n "$handoff_paths" ]]; then
-      handoff_paths="$handoff_paths, $rel_output_dir/ENHANCE-${slug}.md"
+  if [[ "$round" -gt 1 ]]; then
+    # Re-review: only the latest fix report matters
+    local prev_round=$((round - 1))
+    local fix_file
+    if [[ "$prev_round" -gt 1 ]]; then
+      fix_file="FIX-r${prev_round}-${slug}.md"
     else
-      handoff_paths="$rel_output_dir/ENHANCE-${slug}.md"
+      fix_file="FIX-${slug}.md"
+    fi
+    if [[ ! -f "$output_abs/$fix_file" ]]; then
+      die "Fix report $fix_file not found in $output_abs. Run the fixer for round $prev_round first."
+    fi
+    handoff_paths="$rel_output_dir/$fix_file"
+  else
+    # Round 1: worker and enhancer handoffs
+    if [[ -f "$output_abs/HANDOFF-${slug}.md" ]]; then
+      handoff_paths="$rel_output_dir/HANDOFF-${slug}.md"
+    fi
+    if [[ -f "$output_abs/ENHANCE-${slug}.md" ]]; then
+      if [[ -n "$handoff_paths" ]]; then
+        handoff_paths="$handoff_paths, $rel_output_dir/ENHANCE-${slug}.md"
+      else
+        handoff_paths="$rel_output_dir/ENHANCE-${slug}.md"
+      fi
     fi
   fi
-  # Include fix reports from previous rounds
-  shopt -s nullglob
-  for f in "$output_abs"/FIX-*"${slug}.md"; do
-    local rel_f="${f#$root/}"
-    if [[ -n "$handoff_paths" ]]; then
-      handoff_paths="$handoff_paths, $rel_f"
-    else
-      handoff_paths="$rel_f"
-    fi
-  done
-  shopt -u nullglob
   [[ -z "$handoff_paths" ]] && handoff_paths="None"
 
   local template="$TEMPLATE_DIR/03-reviewer.md"
@@ -471,6 +502,62 @@ cmd_fix() {
   print_commands "$prompt"
 }
 
+cmd_track() {
+  local loop_dir="" hash=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir) require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
+      -*)    die "Unknown option: $1" ;;
+      *)
+        [[ -z "$hash" ]] || die "Unexpected argument: $1"
+        hash="$1"; shift ;;
+    esac
+  done
+
+  if [[ -z "$loop_dir" ]]; then
+    loop_dir="$(find_loop_dir)"
+  fi
+
+  local agl_file="$loop_dir/.agl"
+  [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
+
+  # Default to HEAD
+  if [[ -z "$hash" ]]; then
+    hash="$(git rev-parse --short HEAD 2>/dev/null)" || die "Not in a git repository"
+  else
+    # Validate and shorten the provided hash
+    hash="$(git rev-parse --short "$hash" 2>/dev/null)" || die "Invalid commit hash: $hash"
+  fi
+
+  local existing
+  existing="$(read_meta_optional "$agl_file" COMMITS)"
+
+  if [[ -z "$existing" ]]; then
+    # No commits tracked yet — add the line
+    echo "COMMITS=$hash" >> "$agl_file"
+    echo "Tracked: $hash"
+  else
+    # Check if the last tracked hash is still an ancestor of HEAD
+    local last_hash="${existing##*,}"
+    if git merge-base --is-ancestor "$last_hash" HEAD 2>/dev/null; then
+      # Last hash still in history — append
+      sed_inplace "s|^COMMITS=.*|COMMITS=${existing},${hash}|" "$agl_file"
+      echo "Tracked: $hash (appended)"
+    else
+      # Last hash was amended/rebased — replace it
+      local prefix="${existing%,*}"
+      if [[ "$prefix" == "$existing" ]]; then
+        # Only one hash was tracked, replace it entirely
+        sed_inplace "s|^COMMITS=.*|COMMITS=${hash}|" "$agl_file"
+      else
+        sed_inplace "s|^COMMITS=.*|COMMITS=${prefix},${hash}|" "$agl_file"
+      fi
+      echo "Tracked: $hash (replaced $last_hash)"
+    fi
+  fi
+}
+
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
@@ -484,6 +571,7 @@ case "$command" in
   enhance) cmd_enhance "$@" ;;
   review)  cmd_review "$@" ;;
   fix)     cmd_fix "$@" ;;
+  track)   cmd_track "$@" ;;
   -h|--help) usage 0 ;;
   *)       die "Unknown command: $command. Run 'agl --help' for usage." ;;
 esac

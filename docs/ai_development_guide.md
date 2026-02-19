@@ -4,7 +4,7 @@ This document provides a technical overview of the **agent-loop** project, desig
 
 ## Project Overview
 
-`agl` is a pure Bash CLI scaffolding tool for multi-agent development workflows. It generates timestamped prompt files from Markdown templates — it does **not** run agents itself. The companion tool `agw` (external, at `~/bin/agw`) executes the generated prompts.
+`agl` is a pure Bash CLI tool for multi-agent development workflows. It generates timestamped prompt files from Markdown templates and can invoke `agw` directly as a pass-through. The companion tool `agw` (external, at `~/bin/agw`) handles actual agent execution with model selection, streaming, and read-only mode.
 
 ## Development
 
@@ -24,8 +24,8 @@ agl-deploy
 
 ### Two-tool separation
 
-- **`agl` (this repo)** — Generates prompts, creates loop directories, tracks metadata. Never invokes an agent.
-- **`agw` (external)** — Runs agents (Claude, Codex) with model selection, streaming, read-only mode. `agl` prints the `agw` command for the user to run.
+- **`agl` (this repo)** — Scaffolds and runs agent loops. Creates loop directories, generates prompts, tracks metadata. Can invoke `agw` directly (`agl work`, `agl enhance claude`, etc.) or print the command for manual execution.
+- **`agw` (external)** — Runs agents (Claude, Codex) with model selection, streaming, read-only mode.
 
 ### Entry point: `bin/agl.sh`
 
@@ -34,12 +34,14 @@ All logic lives in a single script. Key commands map to functions:
 | Command | Function | Purpose |
 |---------|----------|---------|
 | `agl init` | `cmd_init` | Creates loop dir (+ worktree/branch), snapshots plan/context, generates worker prompt |
-| `agl enhance` | `cmd_enhance` | Generates enhancer prompt for surgical improvements |
-| `agl review` | `cmd_review` | Generates reviewer prompt (read-only mode via `-r` flag), handles round numbering |
-| `agl fix` | `cmd_fix` | Finds latest review output, generates fixer prompt, increments ROUND |
-| `agl track` | `cmd_track` | Records commit hashes in `.agl` metadata with amend detection |
+| `agl work <agent>` | `cmd_work` | Runs agent with the most recent prompt in the worktree |
+| `agl commit` | `cmd_commit` | Stages and commits all changes in the worktree |
+| `agl enhance [<agent>]` | `cmd_enhance` | Generates enhancer prompt; optionally runs agent |
+| `agl review [<agent>]` | `cmd_review` | Generates reviewer prompt (auto-injects `-r`); optionally runs agent |
+| `agl fix [<agent>]` | `cmd_fix` | Finds latest review output, generates fixer prompt, increments ROUND; optionally runs agent |
+| `agl merge [<slug>]` | `cmd_merge` | Squash-merges worktree branch into current branch, cleans up |
 
-Helper functions: `find_loop_dir`, `read_meta`/`read_meta_optional`, `sed_escape`/`sed_inplace` (portable BSD/GNU), `slug_to_name`, `print_commands`.
+Helper functions: `find_loop_dir`, `read_meta`/`read_meta_optional`, `sed_escape`/`sed_inplace` (portable BSD/GNU), `slug_to_name`, `print_commands`, `run_agent`.
 
 ### Templates (`templates/`)
 
@@ -52,15 +54,30 @@ Four Markdown templates with `{{PLACEHOLDER}}` syntax filled by `sed`:
 | `03-reviewer.md` | Code review | Read-Only |
 | `04-fixer.md` | Apply review findings | Read-Write |
 
+#### Template-writing tips
+
+1. **Front-load constraints** - Put role rules before context so the agent internalizes boundaries before loading content
+
+2. **Be explicit about READ-ONLY** - The reviewer template repeats this multiple times because agents naturally want to help by fixing
+
+3. **Use the same feature slug** - Keeps handoffs organized and traceable
+
+4. **Include file paths in reviewer prompt** - Helps scope the review and prevents the agent from wandering
+
+5. **"No changes required" is valid** - Tell enhancers this explicitly so they don't hunt for problems that don't exist
+
+6. **Independent self-review catches blind spots** - Workers, enhancers and fixers spawn a sub-agent with fresh context to review their own work before handing off. The sub-agent works against the same spec, not the parent agent's interpretation, so it can catch assumptions the original agent baked in
+
 ### Per-loop directory structure
 
-Each `agl init` creates a timestamped directory under `work/agent-loop/`:
+Each `agl init` creates a timestamped directory in the primary tree under `work/agent-loop/`:
 ```
 work/agent-loop/<timestamp>-<slug>/
-├── .agl              # key=value metadata (FEATURE_SLUG, PLAN_PATH, DATE, ROUND, COMMITS)
+├── .agl              # key=value metadata (FEATURE_SLUG, PLAN_PATH, DATE, ROUND, BRANCH, WORKTREE, MAIN_ROOT, COMMITS)
 ├── context/          # snapshots of --plan and --context files
 ├── prompts/          # generated prompt files (01-worker.md, 03-reviewer-r2.md, etc.)
-└── output/           # agent output (HANDOFF-*.md, REVIEW-*.md, etc.)
+├── output/           # agent output (HANDOFF-*.md, REVIEW-*.md, etc.)
+└── worktree/         # git worktree (isolated checkout on agl/<slug> branch)
 ```
 
 ### Deployment

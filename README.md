@@ -1,6 +1,6 @@
 # Agent Loop
 
-Scaffolding tool and templates for multi-agent development workflows. `agl` generates loop directories and fills template placeholders; `agw` executes agents. Language-agnostic and platform-agnostic (works with Claude, Codex, Gemini, etc.).
+Scaffolding tool and templates for multi-agent development workflows. `agl` generates loop directories, fills template placeholders, and runs agents via `agw`. Language-agnostic and platform-agnostic (works with Claude, Codex, Gemini, etc.).
 
 ---
 
@@ -17,29 +17,26 @@ echo "work/agent-loop/" >> .gitignore
 cd ~/your-project
 agl init add-auth --plan work/wip/task-1.md
 
-# Run the printed commands from repo root
-(cd "work/agent-loop/worktrees/add-auth" && agw claude "work/agent-loop/.../prompts/01-worker.md")
+# Run the worker agent
+agl work claude
 agl commit
 
 # Enhance
-agl enhance
-(cd "work/agent-loop/worktrees/add-auth" && agw claude "work/agent-loop/.../prompts/02-enhancer.md")
+agl enhance claude
 agl commit
 
 # Review (read-only)
 agl review --files "src/auth.rs, src/middleware.rs"
-(cd "work/agent-loop/worktrees/add-auth" && agw claude -r "work/agent-loop/.../prompts/03-reviewer.md")
 
 # Fix
-agl fix
-(cd "work/agent-loop/worktrees/add-auth" && agw claude "work/agent-loop/.../prompts/04-fixer.md")
+agl fix claude
 agl commit
 
 # Squash-merge into the current branch
 agl merge add-auth
 ```
 
-`agl` generates prompts and prints the commands. `agw` runs the agent. They are separate tools with separate concerns. All agent work happens in an isolated git worktree — the only manual step is the final squash-merge commit message.
+`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. The only manual step is the final squash-merge commit message.
 
 ---
 
@@ -49,10 +46,11 @@ agl merge add-auth
 
 ```
 agl init <feature-slug> --plan <path>   Create worktree, branch, and worker prompt
-agl enhance                             Generate enhancer prompt
-agl review                              Generate reviewer prompt
-agl fix                                 Generate fixer prompt
+agl work <agent>                        Run agent with the most recent prompt
 agl commit                              Stage and commit changes in the worktree
+agl enhance [<agent>]                   Generate enhancer prompt (optionally run agent)
+agl review [<agent>]                    Generate reviewer prompt (optionally run agent)
+agl fix [<agent>]                       Generate fixer prompt (optionally run agent)
 agl merge [<slug>]                      Squash-merge worktree branch into the current branch
 ```
 
@@ -64,6 +62,19 @@ agl merge [<slug>]                      Squash-merge worktree branch into the cu
 | `--task <text>` | Task description (default: Implement the feature according to the plan.) |
 | `--context <paths>` | Additional context paths (default: None) |
 
+### Work Options
+
+| Option | Description |
+|--------|-------------|
+| `--dir <path>` | Loop directory (default: most recent) |
+| `<agent> [flags...]` | Agent name and flags (passed through to agw) |
+
+### Commit Options
+
+| Option | Description |
+|--------|-------------|
+| `--dir <path>` | Loop directory (default: most recent) |
+
 ### Enhance Options
 
 | Option | Description |
@@ -72,6 +83,7 @@ agl merge [<slug>]                      Squash-merge worktree branch into the cu
 | `--context <paths>` | Additional context paths |
 | `--commits <hashes>` | Relevant commit hashes |
 | `--instructions <text>` | Additional instructions |
+| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agw) |
 
 ### Review Options
 
@@ -82,6 +94,7 @@ agl merge [<slug>]                      Squash-merge worktree branch into the cu
 | `--context <paths>` | Additional context paths |
 | `--commits <hashes>` | Relevant commit hashes |
 | `--checklist <text>` | Review checklist |
+| `[<agent> [flags...]]` | Run agent after scaffolding (`-r` auto-injected) |
 
 ### Fix Options
 
@@ -89,29 +102,25 @@ agl merge [<slug>]                      Squash-merge worktree branch into the cu
 |--------|-------------|
 | `--dir <path>` | Loop directory (default: most recent) |
 | `--context <paths>` | Additional context paths |
-
-### Commit Options
-
-| Option | Description |
-|--------|-------------|
-| `--dir <path>` | Loop directory (default: most recent) |
+| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agw) |
 
 ### Merge Options
 
 | Option | Description |
 |--------|-------------|
-| `[<slug>]` | Feature slug to merge (default: most recent worktree loop) |
+| `[<slug>]` | Feature slug to merge (default: most recent loop) |
 | `--dir <path>` | Loop directory (default: most recent) |
 | `--no-delete` | Preserve worktree and branch after merge |
 
 ### Worktree Workflow
 
-`agl init` creates a git worktree at `work/agent-loop/worktrees/<slug>/` on a dedicated branch `agl/<slug>`. All agent work happens in this isolated checkout. The lifecycle is:
+`agl init` creates a loop directory at `work/agent-loop/<timestamp>-<slug>/` in the primary tree with a git worktree at `<loop_dir>/worktree/` on a dedicated branch `agl/<slug>`. All agent work happens in this isolated checkout. The lifecycle is:
 
-1. **`agl init <slug>`** — creates branch, worktree, loop directory, and worker prompt
-2. **Run agents** — `agl enhance`, `agl review`, `agl fix` generate prompts; run the printed `(cd ... && agw ...)` commands from the repo root
+1. **`agl init <slug>`** — creates loop directory, branch, worktree, and worker prompt
+2. **`agl work <agent>`** — runs the agent with the most recent prompt in the worktree
 3. **`agl commit`** — stages all changes and commits with a mechanical message (e.g. `agl: add-auth worker`)
-4. **`agl merge`** — squash-merges the worktree branch into the current branch, opens the editor for a user-authored commit message, then removes the worktree and branch
+4. **`agl enhance <agent>`**, **`agl review`**, **`agl fix <agent>`** — scaffold prompts and optionally run agents
+5. **`agl merge`** — squash-merges the worktree branch into the current branch, opens the editor for a user-authored commit message, then removes the worktree and branch
 
 This keeps agent changes isolated from unrelated work, makes intermediate commits mechanical, and produces a single squash commit with a meaningful message at the end.
 
@@ -210,32 +219,30 @@ All templates use `{{PLACEHOLDER}}` syntax. `agl` fills these automatically:
 
 ## Output Locations
 
-Each loop creates a timestamped directory inside the worktree under `work/agent-loop/`:
+Each loop creates a timestamped directory in the primary tree under `work/agent-loop/`:
 
 ```
 work/agent-loop/
-├── worktrees/
-│   └── add-auth/                          # git worktree (isolated checkout)
-│       └── work/agent-loop/
-│           └── 2026-02-17-142533-add-auth/
-│               ├── .agl                   # metadata (slug, plan, date, round, branch, worktree, etc.)
-│               ├── context/
-│               │   ├── plan.md            # snapshot of --plan file
-│               │   └── design.md          # snapshot of --context files
-│               ├── prompts/
-│               │   ├── 01-worker.md
-│               │   ├── 02-enhancer.md
-│               │   ├── 03-reviewer.md
-│               │   ├── 04-fixer.md
-│               │   ├── 03-reviewer-r2.md  # round 2
-│               │   └── 04-fixer-r2.md     # round 2
-│               └── output/
-│                   ├── HANDOFF-add-auth.md
-│                   ├── ENHANCE-add-auth.md
-│                   ├── REVIEW-add-auth.md
-│                   ├── FIX-add-auth.md
-│                   ├── REVIEW-r2-add-auth.md
-│                   └── FIX-r2-add-auth.md
+└── 2026-02-17-142533-add-auth/
+    ├── .agl                   # metadata (slug, plan, date, round, branch, worktree, etc.)
+    ├── context/
+    │   ├── plan.md            # snapshot of --plan file
+    │   └── design.md          # snapshot of --context files
+    ├── prompts/
+    │   ├── 01-worker.md
+    │   ├── 02-enhancer.md
+    │   ├── 03-reviewer.md
+    │   ├── 04-fixer.md
+    │   ├── 03-reviewer-r2.md  # round 2
+    │   └── 04-fixer-r2.md     # round 2
+    ├── output/
+    │   ├── HANDOFF-add-auth.md
+    │   ├── ENHANCE-add-auth.md
+    │   ├── REVIEW-add-auth.md
+    │   ├── FIX-add-auth.md
+    │   ├── REVIEW-r2-add-auth.md
+    │   └── FIX-r2-add-auth.md
+    └── worktree/              # git worktree (isolated checkout on agl/add-auth branch)
 ```
 
 The `work/agent-loop/` directory must be in `.gitignore`.
@@ -246,11 +253,11 @@ Each loop directory contains a `.agl` file with `KEY=value` metadata:
 
 ```
 FEATURE_SLUG=add-auth
-PLAN_PATH=work/agent-loop/.../context/plan.md
+PLAN_PATH=work/agent-loop/2026-02-17-142533-add-auth/context/plan.md
 DATE=2026-02-17
 ROUND=1
 BRANCH=agl/add-auth
-WORKTREE=work/agent-loop/worktrees/add-auth
+WORKTREE=work/agent-loop/2026-02-17-142533-add-auth/worktree
 MAIN_ROOT=/abs/path/to/project
 LAST_STAGE=worker
 COMMITS=a1b2c3,d4e5f6
@@ -302,19 +309,3 @@ agl-deploy
 ```
 
 This clones the latest from GitHub and redeploys everything.
-
----
-
-## Tips
-
-1. **Front-load constraints** - Put role rules before context so the agent internalizes boundaries before loading content
-
-2. **Be explicit about READ-ONLY** - The reviewer template repeats this multiple times because agents naturally want to help by fixing
-
-3. **Use the same feature slug** - Keeps handoffs organized and traceable
-
-4. **Include file paths in reviewer prompt** - Helps scope the review and prevents the agent from wandering
-
-5. **"No changes required" is valid** - Tell enhancers this explicitly so they don't hunt for problems that don't exist
-
-6. **Independent self-review catches blind spots** - Workers, enhancers and fixers spawn a sub-agent with fresh context to review their own work before handing off. The sub-agent works against the same spec, not the parent agent's interpretation, so it can catch assumptions the original agent baked in

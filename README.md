@@ -10,35 +10,36 @@ Scaffolding tool and templates for multi-agent development workflows. `agl` gene
 # Bootstrap (from repo checkout)
 ./deploy.sh
 
-# Start a loop
+# Ensure work/agent-loop/ is in .gitignore
+echo "work/agent-loop/" >> .gitignore
+
+# Start a loop (creates worktree + branch)
 cd ~/your-project
 agl init add-auth --plan work/wip/task-1.md
-agw claude work/agent-loop/2026-02-17-142533-add-auth/prompts/01-worker.md
-git add -A && git commit -m "feat: add auth (worker)"
-agl track
+
+# Run the printed commands from repo root
+(cd "work/agent-loop/worktrees/add-auth" && agw claude "work/agent-loop/.../prompts/01-worker.md")
+agl commit
 
 # Enhance
 agl enhance
-agw claude work/agent-loop/2026-02-17-142533-add-auth/prompts/02-enhancer.md
-git add -A && git commit -m "feat: add auth (enhancer)"
-agl track
+(cd "work/agent-loop/worktrees/add-auth" && agw claude "work/agent-loop/.../prompts/02-enhancer.md")
+agl commit
 
 # Review (read-only)
 agl review --files "src/auth.rs, src/middleware.rs"
-agw claude -r work/agent-loop/2026-02-17-142533-add-auth/prompts/03-reviewer.md
+(cd "work/agent-loop/worktrees/add-auth" && agw claude -r "work/agent-loop/.../prompts/03-reviewer.md")
 
 # Fix
 agl fix
-agw claude work/agent-loop/2026-02-17-142533-add-auth/prompts/04-fixer.md
-git add -A && git commit -m "fix: auth review findings"
-agl track
+(cd "work/agent-loop/worktrees/add-auth" && agw claude "work/agent-loop/.../prompts/04-fixer.md")
+agl commit
 
-# Re-review (round 2)
-agl review
-agw claude -r work/agent-loop/2026-02-17-142533-add-auth/prompts/03-reviewer-r2.md
+# Squash-merge into the current branch
+agl merge add-auth
 ```
 
-`agl` generates prompts and prints the commands. `agw` runs the agent. They are separate tools with separate concerns.
+`agl` generates prompts and prints the commands. `agw` runs the agent. They are separate tools with separate concerns. All agent work happens in an isolated git worktree — the only manual step is the final squash-merge commit message.
 
 ---
 
@@ -47,11 +48,12 @@ agw claude -r work/agent-loop/2026-02-17-142533-add-auth/prompts/03-reviewer-r2.
 ### Commands
 
 ```
-agl init <feature-slug> --plan <path>   Create loop dir, generate worker prompt
+agl init <feature-slug> --plan <path>   Create worktree, branch, and worker prompt
 agl enhance                             Generate enhancer prompt
 agl review                              Generate reviewer prompt
 agl fix                                 Generate fixer prompt
-agl track [hash]                        Record a commit hash (default: HEAD)
+agl commit                              Stage and commit changes in the worktree
+agl merge [<slug>]                      Squash-merge worktree branch into the current branch
 ```
 
 ### Init Options
@@ -59,7 +61,7 @@ agl track [hash]                        Record a commit hash (default: HEAD)
 | Option | Description |
 |--------|-------------|
 | `--plan <path>` | Path to the plan file (required) |
-| `--task <text>` | Task description (default: derived from plan) |
+| `--task <text>` | Task description (default: Implement the feature according to the plan.) |
 | `--context <paths>` | Additional context paths (default: None) |
 
 ### Enhance Options
@@ -88,12 +90,30 @@ agl track [hash]                        Record a commit hash (default: HEAD)
 | `--dir <path>` | Loop directory (default: most recent) |
 | `--context <paths>` | Additional context paths |
 
-### Track Options
+### Commit Options
 
 | Option | Description |
 |--------|-------------|
-| `[hash]` | Commit hash to track (default: HEAD) |
 | `--dir <path>` | Loop directory (default: most recent) |
+
+### Merge Options
+
+| Option | Description |
+|--------|-------------|
+| `[<slug>]` | Feature slug to merge (default: most recent worktree loop) |
+| `--dir <path>` | Loop directory (default: most recent) |
+| `--no-delete` | Preserve worktree and branch after merge |
+
+### Worktree Workflow
+
+`agl init` creates a git worktree at `work/agent-loop/worktrees/<slug>/` on a dedicated branch `agl/<slug>`. All agent work happens in this isolated checkout. The lifecycle is:
+
+1. **`agl init <slug>`** — creates branch, worktree, loop directory, and worker prompt
+2. **Run agents** — `agl enhance`, `agl review`, `agl fix` generate prompts; run the printed `(cd ... && agw ...)` commands from the repo root
+3. **`agl commit`** — stages all changes and commits with a mechanical message (e.g. `agl: add-auth worker`)
+4. **`agl merge`** — squash-merges the worktree branch into the current branch, opens the editor for a user-authored commit message, then removes the worktree and branch
+
+This keeps agent changes isolated from unrelated work, makes intermediate commits mechanical, and produces a single squash commit with a meaningful message at the end.
 
 ### Round Numbering
 
@@ -107,22 +127,6 @@ prompts/04-fixer-r2.md      # round 2
 ```
 
 The round counter increments each time `agl fix` is called.
-
-### Commit Tracking
-
-`agl track` records commit hashes in `.agl` metadata. Tracked commits are automatically used as `{{COMMIT_HASHES}}` in enhance and review prompts when `--commits` is not explicitly provided.
-
-```bash
-agl track          # tracks HEAD
-agl track abc123   # tracks a specific hash
-```
-
-Amend detection: if the most recent tracked commit is no longer an ancestor of HEAD (e.g. you ran `git commit --amend`), `agl track` replaces it instead of appending. This keeps the commit list accurate without manual cleanup.
-
-```
-# .agl after three stages:
-COMMITS=a1b2c3,d4e5f6,g7h8i9
-```
 
 ### Context Snapshotting
 
@@ -206,29 +210,50 @@ All templates use `{{PLACEHOLDER}}` syntax. `agl` fills these automatically:
 
 ## Output Locations
 
-Each loop creates a timestamped directory under `work/agent-loop/`:
+Each loop creates a timestamped directory inside the worktree under `work/agent-loop/`:
 
 ```
 work/agent-loop/
-└── 2026-02-17-142533-add-auth/
-    ├── .agl                     # metadata (slug, plan, date, round, commits)
-    ├── context/
-    │   ├── plan.md              # snapshot of --plan file
-    │   └── design.md            # snapshot of --context files
-    ├── prompts/
-    │   ├── 01-worker.md
-    │   ├── 02-enhancer.md
-    │   ├── 03-reviewer.md
-    │   ├── 04-fixer.md
-    │   ├── 03-reviewer-r2.md   # round 2
-    │   └── 04-fixer-r2.md      # round 2
-    └── output/
-        ├── HANDOFF-add-auth.md
-        ├── ENHANCE-add-auth.md
-        ├── REVIEW-add-auth.md
-        ├── FIX-add-auth.md
-        ├── REVIEW-r2-add-auth.md
-        └── FIX-r2-add-auth.md
+├── worktrees/
+│   └── add-auth/                          # git worktree (isolated checkout)
+│       └── work/agent-loop/
+│           └── 2026-02-17-142533-add-auth/
+│               ├── .agl                   # metadata (slug, plan, date, round, branch, worktree, etc.)
+│               ├── context/
+│               │   ├── plan.md            # snapshot of --plan file
+│               │   └── design.md          # snapshot of --context files
+│               ├── prompts/
+│               │   ├── 01-worker.md
+│               │   ├── 02-enhancer.md
+│               │   ├── 03-reviewer.md
+│               │   ├── 04-fixer.md
+│               │   ├── 03-reviewer-r2.md  # round 2
+│               │   └── 04-fixer-r2.md     # round 2
+│               └── output/
+│                   ├── HANDOFF-add-auth.md
+│                   ├── ENHANCE-add-auth.md
+│                   ├── REVIEW-add-auth.md
+│                   ├── FIX-add-auth.md
+│                   ├── REVIEW-r2-add-auth.md
+│                   └── FIX-r2-add-auth.md
+```
+
+The `work/agent-loop/` directory must be in `.gitignore`.
+
+### `.agl` Metadata
+
+Each loop directory contains a `.agl` file with `KEY=value` metadata:
+
+```
+FEATURE_SLUG=add-auth
+PLAN_PATH=work/agent-loop/.../context/plan.md
+DATE=2026-02-17
+ROUND=1
+BRANCH=agl/add-auth
+WORKTREE=work/agent-loop/worktrees/add-auth
+MAIN_ROOT=/abs/path/to/project
+LAST_STAGE=worker
+COMMITS=a1b2c3,d4e5f6
 ```
 
 ---

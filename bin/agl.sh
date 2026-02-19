@@ -18,15 +18,16 @@ usage() {
 Usage: agl <command> [options]
 
 Commands:
-  init <feature-slug>   Create a new agent loop
+  init <feature-slug>   Create a new agent loop (worktree + branch)
   enhance               Generate enhancer prompt
   review                Generate reviewer prompt
   fix                   Generate fixer prompt
-  track [hash]          Record a commit hash (default: HEAD)
+  commit                Stage and commit changes in the worktree
+  merge [<slug>]        Squash-merge worktree branch into the current branch
 
 Init options:
   --plan <path>         Path to the plan file (required)
-  --task <description>  Task description (default: derived from plan)
+  --task <description>  Task description (default: Implement the feature according to the plan.)
   --context <paths>     Additional context paths (default: None)
 
 Enhance options:
@@ -46,11 +47,21 @@ Fix options:
   --dir <path>          Loop directory (default: most recent)
   --context <paths>     Additional context paths (default: None)
 
+Commit options:
+  --dir <path>          Loop directory (default: most recent)
+
+Merge options:
+  [<slug>]              Feature slug to merge (default: most recent)
+  --dir <path>          Loop directory (default: most recent)
+  --no-delete           Preserve worktree and branch after merge
+
 Examples:
   agl init add-auth --plan work/wip/task-1.md
   agl enhance
   agl review --files "src/auth.rs, src/middleware.rs"
   agl fix
+  agl commit
+  agl merge add-auth
 EOF
   exit "${1:-1}"
 }
@@ -106,19 +117,180 @@ sed_escape() {
   printf '%s' "$s"
 }
 
-# Find the most recent loop directory with a .agl file
+# Normalize an existing directory to a physical absolute path (resolves symlinks).
+# Callers must check [[ -d "$path" ]] first.
+abs_path() {
+  cd "$1" && pwd -P
+}
+
+# Guard that CWD is in the primary (non-linked) worktree.
+# Takes the command name as $1 for the error message.
+require_primary_worktree() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not in a git repository"
+  [[ "$(git rev-parse --git-dir)" == "$(git rev-parse --git-common-dir)" ]] \
+    || die "$1 must run from the primary worktree, not a linked worktree."
+}
+
+# Hard-stop if a path is not ignored by git.
+require_ignored() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not in a git repository"
+  local root
+  root="$(project_root)"
+  git -C "$root" check-ignore -q -- "$1" \
+    || die "$1 must be in .gitignore or .git/info/exclude before proceeding."
+}
+
+# Advisory warning for uncommitted changes. Non-blocking, cannot exit the script.
+warn_uncommitted() {
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local root
+  root="$(project_root)"
+  if [[ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]]; then
+    echo "Warning: uncommitted changes detected. Run 'agl commit' first." >&2
+  fi
+}
+
+# Write or update LAST_STAGE in .agl metadata.
+update_last_stage() {
+  local agl_file="$1" stage="$2"
+  local existing
+  existing="$(read_meta_optional "$agl_file" LAST_STAGE)"
+  if [[ -n "$existing" ]]; then
+    sed_inplace "s|^LAST_STAGE=.*|LAST_STAGE=$stage|" "$agl_file"
+  else
+    echo "LAST_STAGE=$stage" >> "$agl_file"
+  fi
+}
+
+# Validate a WORKTREE value from .agl before use in git -C or git worktree remove.
+# Prevents path traversal and spoofing.
+require_safe_worktree_relpath() {
+  local worktree_val="$1" expected_slug="$2"
+
+  # Must be relative (no leading /)
+  if [[ "$worktree_val" == /* ]]; then
+    die "Unsafe WORKTREE path (absolute): $worktree_val"
+  fi
+
+  # Must start with expected prefix
+  if [[ "$worktree_val" != work/agent-loop/worktrees/* ]]; then
+    die "Unsafe WORKTREE path (wrong prefix): $worktree_val"
+  fi
+
+  # Must not contain ..
+  if [[ "$worktree_val" == *..* ]]; then
+    die "Unsafe WORKTREE path (contains ..): $worktree_val"
+  fi
+
+  # Must be exactly work/agent-loop/worktrees/<slug> (one component after prefix)
+  local after_prefix="${worktree_val#work/agent-loop/worktrees/}"
+  if [[ "$after_prefix" == */* ]]; then
+    die "Unsafe WORKTREE path (extra path components): $worktree_val"
+  fi
+
+  # Slug component must match FEATURE_SLUG
+  if [[ "$after_prefix" != "$expected_slug" ]]; then
+    die "WORKTREE slug '$after_prefix' does not match FEATURE_SLUG '$expected_slug'"
+  fi
+}
+
+# Find the most recent loop directory with a .agl file.
+# Falls back to worktree enumeration if nothing found in CWD's tree.
 find_loop_dir() {
   local root
   root="$(project_root)"
   local loop_base="$root/work/agent-loop"
 
+  # Try local tree first
+  if [[ -d "$loop_base" ]]; then
+    local latest
+    latest="$(ls -1d "$loop_base"/*/ 2>/dev/null | sort -r | while read -r d; do
+      if [[ -f "$d/.agl" ]] \
+        && grep -q "^BRANCH=" "$d/.agl" 2>/dev/null \
+        && grep -q "^WORKTREE=" "$d/.agl" 2>/dev/null \
+        && grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
+        echo "$d"
+        break
+      fi
+    done)"
+
+    if [[ -n "$latest" ]]; then
+      echo "${latest%/}"
+      return 0
+    fi
+  fi
+
+  # Fall back to worktree enumeration
+  local wt_result
+  wt_result="$(find_worktree_loop_dir)"
+  if [[ -n "$wt_result" ]]; then
+    echo "$wt_result"
+    return 0
+  fi
+
+  die "No loop directory with .agl metadata found"
+}
+
+# Find the most recent worktree-mode loop across all linked worktrees.
+# Only returns loops whose .agl contains required worktree keys.
+find_worktree_loop_dir() {
+  local root
+  root="$(project_root)"
+  local worktrees_base="$root/work/agent-loop/worktrees"
+
+  if [[ ! -d "$worktrees_base" ]]; then
+    return 0
+  fi
+
+  local wt_path
+  local latest_path="" latest_name=""
+  for wt_path in "$worktrees_base"/*; do
+    [[ -d "$wt_path" ]] || continue
+    local wt_loop_base="$wt_path/work/agent-loop"
+    [[ -d "$wt_loop_base" ]] || continue
+
+    local candidate
+    candidate="$(ls -1d "$wt_loop_base"/*/ 2>/dev/null | sort -r | while read -r d; do
+      [[ -f "$d/.agl" ]] || continue
+      if grep -q "^BRANCH=" "$d/.agl" 2>/dev/null \
+        && grep -q "^WORKTREE=" "$d/.agl" 2>/dev/null \
+        && grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
+        echo "${d%/}"
+        break
+      fi
+    done)"
+
+    [[ -n "$candidate" ]] || continue
+
+    local candidate_name
+    candidate_name="$(basename "$candidate")"
+    if [[ -z "$latest_name" || "$candidate_name" > "$latest_name" ]]; then
+      latest_name="$candidate_name"
+      latest_path="$candidate"
+    fi
+  done
+
+  [[ -n "$latest_path" ]] && echo "$latest_path"
+}
+
+# Find loop dir within a specific root directory.
+find_loop_dir_in() {
+  local search_root="$1"
+  local loop_base="$search_root/work/agent-loop"
+
   if [[ ! -d "$loop_base" ]]; then
-    die "No agent-loop directory found at $loop_base"
+    die "No agent-loop directory found in $search_root"
   fi
 
   local latest
   latest="$(ls -1d "$loop_base"/*/ 2>/dev/null | sort -r | while read -r d; do
-    if [[ -f "$d/.agl" ]]; then
+    if [[ -f "$d/.agl" ]] \
+      && grep -q "^BRANCH=" "$d/.agl" 2>/dev/null \
+      && grep -q "^WORKTREE=" "$d/.agl" 2>/dev/null \
+      && grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
       echo "$d"
       break
     fi
@@ -128,7 +300,6 @@ find_loop_dir() {
     die "No loop directory with .agl metadata found in $loop_base"
   fi
 
-  # Strip trailing slash
   echo "${latest%/}"
 }
 
@@ -149,15 +320,57 @@ read_meta_optional() {
   grep "^${key}=" "$agl_file" 2>/dev/null | head -1 | cut -d'=' -f2- || true
 }
 
-# Print the prompt path and ready-to-run agw commands
+# Compute the loop's output dir relative to the repo/worktree root used by the agent.
+# For worktree-mode loops, this makes OUTPUT_DIR valid from inside the linked worktree.
+loop_rel_output_dir() {
+  local loop_dir="$1" agl_file="$2"
+  local root
+  root="$(project_root)"
+
+  local worktree_rel
+  worktree_rel="$(read_meta_optional "$agl_file" WORKTREE)"
+  if [[ -n "$worktree_rel" ]]; then
+    local worktree_abs="$root/$worktree_rel"
+    if [[ "$loop_dir" == "$worktree_abs/"* ]]; then
+      local loop_rel="${loop_dir#"$worktree_abs"/}"
+      echo "$loop_rel/output"
+      return 0
+    fi
+  fi
+
+  echo "${loop_dir#"$root"/}/output"
+}
+
+# Print the prompt path and ready-to-run agw commands.
+# When worktree_rel is provided, prints (cd ...) wrapped commands.
 print_commands() {
   local prompt_path="$1"
   local readonly_flag="${2:-}"
+  local worktree_rel="${3:-}"
   local root
   root="$(project_root)"
-  local rel_path="${prompt_path#$root/}"
+  local rel_path="${prompt_path#"$root"/}"
 
   echo ""
+  if [[ -n "$worktree_rel" ]]; then
+    # Compute prompt path relative to worktree root
+    local worktree_abs="$root/$worktree_rel"
+    if [[ "$prompt_path" == "$worktree_abs/"* ]]; then
+      local prompt_rel="${prompt_path#"$worktree_abs"/}"
+      echo "Prompt: $rel_path"
+      echo ""
+      echo "Run:"
+      if [[ "$readonly_flag" == "-r" ]]; then
+        echo "  (cd \"$worktree_rel\" && agw claude -r \"$prompt_rel\")"
+        echo "  (cd \"$worktree_rel\" && agw codex  -r \"$prompt_rel\")"
+      else
+        echo "  (cd \"$worktree_rel\" && agw claude \"$prompt_rel\")"
+        echo "  (cd \"$worktree_rel\" && agw codex  \"$prompt_rel\")"
+      fi
+      return 0
+    fi
+  fi
+
   echo "Prompt: $rel_path"
   echo ""
   echo "Run:"
@@ -199,10 +412,72 @@ cmd_init() {
     die "Invalid feature slug '$slug'. Use lowercase alphanumeric with hyphens (e.g. add-auth-middleware)."
   fi
   [[ -z "$plan_path" ]] && die "--plan is required. Usage: agl init <feature-slug> --plan <path>"
-  [[ -f "$plan_path" ]] || die "Plan file not found: $plan_path"
 
-  local root date timestamp loop_dir prompts_dir output_dir context_dir
-  root="$(project_root)"
+  # --- Early validation (before any side effects) ---
+  require_primary_worktree "agl init"
+
+  local main_root
+  main_root="$(project_root)"
+
+  require_ignored "work/agent-loop"
+  require_ignored "work/agent-loop/worktrees"
+
+  local caller_pwd
+  caller_pwd="$(pwd -P)"
+
+  local plan_abs
+  case "$plan_path" in
+    /*) plan_abs="$plan_path" ;;
+    *)  plan_abs="$caller_pwd/$plan_path" ;;
+  esac
+
+  [[ -f "$plan_abs" && -r "$plan_abs" ]] \
+    || die "Plan file not found or not readable: $plan_path"
+
+  # Validate --context files before any branch/worktree creation
+  if [[ "$other_context" != "None" ]]; then
+    local IFS=',' validate_ctx
+    for validate_ctx in $other_context; do
+      validate_ctx="$(printf '%s' "$validate_ctx" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      local validate_abs
+      case "$validate_ctx" in
+        /*) validate_abs="$validate_ctx" ;;
+        *)  validate_abs="$caller_pwd/$validate_ctx" ;;
+      esac
+      [[ -f "$validate_abs" && -r "$validate_abs" ]] \
+        || die "Context file not found or not readable: $validate_ctx"
+    done
+  fi
+
+  local branch_name="agl/$slug"
+  local worktree_rel="work/agent-loop/worktrees/$slug"
+
+  # Validate no conflicts
+  if git rev-parse --verify "$branch_name" >/dev/null 2>&1; then
+    die "Branch $branch_name already exists"
+  fi
+  if [[ -d "$main_root/$worktree_rel" ]]; then
+    die "Worktree directory already exists: $worktree_rel"
+  fi
+
+  # --- Create branch and worktree ---
+  git branch "$branch_name" HEAD
+
+  local worktree_abs="$main_root/$worktree_rel"
+  if ! git worktree add "$worktree_abs" "$branch_name"; then
+    git worktree remove --force "$worktree_abs" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    if [[ "$worktree_abs" == "$main_root/work/agent-loop/worktrees/"* ]]; then
+      rm -rf "$worktree_abs"
+    fi
+    git branch -D "$branch_name" 2>/dev/null || true
+    die "Failed to create worktree at $worktree_rel"
+  fi
+
+  # Anchor all downstream paths to the worktree
+  local root="$worktree_abs"
+
+  local date timestamp loop_dir prompts_dir output_dir context_dir
   date="$(date +%Y-%m-%d)"
   timestamp="$(date +%Y-%m-%d-%H%M%S)"
   loop_dir="$root/work/agent-loop/${timestamp}-${slug}"
@@ -210,70 +485,75 @@ cmd_init() {
   output_dir="$loop_dir/output"
   context_dir="$loop_dir/context"
 
-  # Relative paths (from project root)
-  local rel_output_dir="${output_dir#$root/}"
-  local rel_context_dir="${context_dir#$root/}"
+  # Relative paths (from worktree root)
+  local rel_output_dir="${output_dir#"$root"/}"
+  local rel_context_dir="${context_dir#"$root"/}"
 
   mkdir -p "$prompts_dir" "$output_dir" "$context_dir"
 
-  # Snapshot plan into context/
   local plan_base
-  plan_base="$(basename "$plan_path")"
+  plan_base="$(basename "$plan_abs")"
   local plan_dest
   if [[ "$plan_base" == *.* ]]; then
     plan_dest="plan.${plan_base##*.}"
   else
     plan_dest="plan"
   fi
-  cp "$plan_path" "$context_dir/$plan_dest"
+  cp "$plan_abs" "$context_dir/$plan_dest"
   local rel_plan_path="$rel_context_dir/$plan_dest"
 
-  # Snapshot --context files into context/
+  # Snapshot --context files into context/ (resolved from invocation directory)
   local rel_context_paths="None"
   if [[ "$other_context" != "None" ]]; then
     rel_context_paths=""
     local IFS=','
     for ctx_path in $other_context; do
-      # Trim whitespace
       ctx_path="$(printf '%s' "$ctx_path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-      if [[ -f "$ctx_path" ]]; then
-        local ctx_base ctx_dest
-        ctx_base="$(basename "$ctx_path")"
-        ctx_dest="$ctx_base"
-        # Disambiguate if basename already exists in context/
-        if [[ -f "$context_dir/$ctx_dest" ]]; then
-          local name ext counter
-          if [[ "$ctx_base" == *.* ]]; then
-            name="${ctx_base%.*}"
-            ext=".${ctx_base##*.}"
-          else
-            name="$ctx_base"
-            ext=""
-          fi
-          counter=2
-          while [[ -f "$context_dir/${name}-${counter}${ext}" ]]; do
-            counter=$((counter + 1))
-          done
-          ctx_dest="${name}-${counter}${ext}"
-        fi
-        cp "$ctx_path" "$context_dir/$ctx_dest"
-        if [[ -n "$rel_context_paths" ]]; then
-          rel_context_paths="$rel_context_paths, $rel_context_dir/$ctx_dest"
+
+      local ctx_abs
+      case "$ctx_path" in
+        /*) ctx_abs="$ctx_path" ;;
+        *)  ctx_abs="$caller_pwd/$ctx_path" ;;
+      esac
+
+      local ctx_base ctx_dest
+      ctx_base="$(basename "$ctx_abs")"
+      ctx_dest="$ctx_base"
+      # Disambiguate if basename already exists in context/
+      if [[ -f "$context_dir/$ctx_dest" ]]; then
+        local name ext counter
+        if [[ "$ctx_base" == *.* ]]; then
+          name="${ctx_base%.*}"
+          ext=".${ctx_base##*.}"
         else
-          rel_context_paths="$rel_context_dir/$ctx_dest"
+          name="$ctx_base"
+          ext=""
         fi
+        counter=2
+        while [[ -f "$context_dir/${name}-${counter}${ext}" ]]; do
+          counter=$((counter + 1))
+        done
+        ctx_dest="${name}-${counter}${ext}"
+      fi
+      cp "$ctx_abs" "$context_dir/$ctx_dest"
+      if [[ -n "$rel_context_paths" ]]; then
+        rel_context_paths="$rel_context_paths, $rel_context_dir/$ctx_dest"
       else
-        die "Context file not found: $ctx_path"
+        rel_context_paths="$rel_context_dir/$ctx_dest"
       fi
     done
   fi
 
-  # Write .agl metadata (paths are relative to project root)
+  # Write .agl metadata
   cat > "$loop_dir/.agl" <<EOF
 FEATURE_SLUG=$slug
 PLAN_PATH=$rel_plan_path
 DATE=$date
 ROUND=1
+BRANCH=$branch_name
+WORKTREE=$worktree_rel
+MAIN_ROOT=$main_root
+LAST_STAGE=worker
 EOF
 
   local feature_name
@@ -300,8 +580,8 @@ EOF
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$rel_output_dir")|g" \
     "$template" > "$prompt"
 
-  echo "Created loop: ${loop_dir#$root/}"
-  print_commands "$prompt"
+  echo "Created loop: ${loop_dir#"$main_root"/}"
+  print_commands "$prompt" "" "$worktree_rel"
 }
 
 cmd_enhance() {
@@ -324,8 +604,9 @@ cmd_enhance() {
   local agl_file="$loop_dir/.agl"
   [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
 
-  local root slug plan_path date
-  root="$(project_root)"
+  warn_uncommitted
+
+  local slug plan_path date
   slug="$(read_meta "$agl_file" FEATURE_SLUG)"
   plan_path="$(read_meta "$agl_file" PLAN_PATH)"
   date="$(read_meta "$agl_file" DATE)"
@@ -337,10 +618,14 @@ cmd_enhance() {
     [[ -n "$tracked" ]] && commit_hashes="$tracked"
   fi
 
-  local rel_output_dir="${loop_dir#$root/}/output"
+  local rel_output_dir
+  rel_output_dir="$(loop_rel_output_dir "$loop_dir" "$agl_file")"
   local handoff_path="$rel_output_dir/HANDOFF-${slug}.md"
   local feature_name
   feature_name="$(slug_to_name "$slug")"
+
+  local worktree_rel
+  worktree_rel="$(read_meta_optional "$agl_file" WORKTREE)"
 
   local template="$TEMPLATE_DIR/02-enhancer.md"
   [[ -f "$template" ]] || die "Template not found: $template"
@@ -360,7 +645,9 @@ cmd_enhance() {
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$rel_output_dir")|g" \
     "$template" > "$prompt"
 
-  print_commands "$prompt"
+  update_last_stage "$agl_file" "enhancer"
+
+  print_commands "$prompt" "" "$worktree_rel"
 }
 
 cmd_review() {
@@ -384,8 +671,9 @@ cmd_review() {
   local agl_file="$loop_dir/.agl"
   [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
 
-  local root slug plan_path date round
-  root="$(project_root)"
+  warn_uncommitted
+
+  local slug plan_path date round
   slug="$(read_meta "$agl_file" FEATURE_SLUG)"
   plan_path="$(read_meta "$agl_file" PLAN_PATH)"
   date="$(read_meta "$agl_file" DATE)"
@@ -398,9 +686,13 @@ cmd_review() {
     [[ -n "$tracked" ]] && commit_hashes="$tracked"
   fi
 
-  local rel_output_dir="${loop_dir#$root/}/output"
+  local rel_output_dir
+  rel_output_dir="$(loop_rel_output_dir "$loop_dir" "$agl_file")"
   local feature_name
   feature_name="$(slug_to_name "$slug")"
+
+  local worktree_rel
+  worktree_rel="$(read_meta_optional "$agl_file" WORKTREE)"
 
   # Compute handoff paths scoped to what's relevant for this round
   local handoff_paths=""
@@ -447,9 +739,6 @@ cmd_review() {
   local prompt="$loop_dir/prompts/$prompt_name"
   mkdir -p "$loop_dir/prompts"
 
-  # Use the round-aware output path in the template
-  local review_output_path="$rel_output_dir/$review_output"
-
   sed \
     -e "s|{{DATE}}|$(sed_escape "$date")|g" \
     -e "s|{{FEATURE_SLUG}}|$(sed_escape "$slug")|g" \
@@ -468,7 +757,7 @@ cmd_review() {
     sed_inplace "s|REVIEW-$(sed_escape "${slug}").md|$(sed_escape "$review_output")|g" "$prompt"
   fi
 
-  print_commands "$prompt" "-r"
+  print_commands "$prompt" "-r" "$worktree_rel"
 }
 
 cmd_fix() {
@@ -489,16 +778,21 @@ cmd_fix() {
   local agl_file="$loop_dir/.agl"
   [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
 
-  local root slug plan_path date round
-  root="$(project_root)"
+  warn_uncommitted
+
+  local slug plan_path date round
   slug="$(read_meta "$agl_file" FEATURE_SLUG)"
   plan_path="$(read_meta "$agl_file" PLAN_PATH)"
   date="$(read_meta "$agl_file" DATE)"
   round="$(read_meta "$agl_file" ROUND)"
 
-  local rel_output_dir="${loop_dir#$root/}/output"
+  local rel_output_dir
+  rel_output_dir="$(loop_rel_output_dir "$loop_dir" "$agl_file")"
   local feature_name
   feature_name="$(slug_to_name "$slug")"
+
+  local worktree_rel
+  worktree_rel="$(read_meta_optional "$agl_file" WORKTREE)"
 
   # Find the review file for the current round
   local review_path=""
@@ -533,8 +827,6 @@ cmd_fix() {
   local prompt="$loop_dir/prompts/$prompt_name"
   mkdir -p "$loop_dir/prompts"
 
-  local fix_output_path="$rel_output_dir/$fix_output"
-
   sed \
     -e "s|{{DATE}}|$(sed_escape "$date")|g" \
     -e "s|{{FEATURE_SLUG}}|$(sed_escape "$slug")|g" \
@@ -554,19 +846,18 @@ cmd_fix() {
   local new_round=$((round + 1))
   sed_inplace "s|^ROUND=.*|ROUND=$new_round|" "$agl_file"
 
-  print_commands "$prompt"
+  update_last_stage "$agl_file" "fixer"
+
+  print_commands "$prompt" "" "$worktree_rel"
 }
 
-cmd_track() {
-  local loop_dir="" hash=""
+cmd_commit() {
+  local loop_dir=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dir) require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
-      -*)    die "Unknown option: $1" ;;
-      *)
-        [[ -z "$hash" ]] || die "Unexpected argument: $1"
-        hash="$1"; shift ;;
+      *)     die "Unknown option: $1" ;;
     esac
   done
 
@@ -577,39 +868,268 @@ cmd_track() {
   local agl_file="$loop_dir/.agl"
   [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
 
-  # Default to HEAD
-  if [[ -z "$hash" ]]; then
-    hash="$(git rev-parse --short HEAD 2>/dev/null)" || die "Not in a git repository"
-  else
-    # Validate and shorten the provided hash
-    hash="$(git rev-parse --short "$hash" 2>/dev/null)" || die "Invalid commit hash: $hash"
+  # Read required .agl keys
+  local slug last_stage round branch worktree_val agl_main_root
+  slug="$(read_meta_optional "$agl_file" FEATURE_SLUG)"
+  last_stage="$(read_meta_optional "$agl_file" LAST_STAGE)"
+  round="$(read_meta_optional "$agl_file" ROUND)"
+  branch="$(read_meta_optional "$agl_file" BRANCH)"
+  worktree_val="$(read_meta_optional "$agl_file" WORKTREE)"
+  agl_main_root="$(read_meta_optional "$agl_file" MAIN_ROOT)"
+
+  if [[ -z "$slug" || -z "$last_stage" || -z "$round" || -z "$branch" || -z "$worktree_val" || -z "$agl_main_root" ]]; then
+    die "Not a worktree-mode loop (required keys missing)"
   fi
 
-  local existing
-  existing="$(read_meta_optional "$agl_file" COMMITS)"
+  if [[ ! "$round" =~ ^[0-9]+$ ]]; then
+    die "Invalid ROUND in .agl: $round"
+  fi
 
-  if [[ -z "$existing" ]]; then
-    # No commits tracked yet — add the line
-    echo "COMMITS=$hash" >> "$agl_file"
-    echo "Tracked: $hash"
-  else
-    # Check if the last tracked hash is still an ancestor of HEAD
-    local last_hash="${existing##*,}"
-    if git merge-base --is-ancestor "$last_hash" HEAD 2>/dev/null; then
-      # Last hash still in history — append
-      sed_inplace "s|^COMMITS=.*|COMMITS=${existing},${hash}|" "$agl_file"
-      echo "Tracked: $hash (appended)"
+  local expected_branch="agl/$slug"
+  if [[ "$branch" != "$expected_branch" ]]; then
+    die "Unexpected BRANCH in .agl: $branch (expected $expected_branch)"
+  fi
+
+  # Establish current repo root
+  local repo_root
+  repo_root="$(project_root)"
+  [[ -d "$repo_root" ]] || die "Invalid repo root: $repo_root"
+  local repo_root_abs
+  repo_root_abs="$(abs_path "$repo_root")"
+
+  # Validate .agl MAIN_ROOT matches current repo
+  [[ -d "$agl_main_root" ]] || die "Invalid .agl MAIN_ROOT: $agl_main_root"
+  local agl_main_root_abs
+  agl_main_root_abs="$(abs_path "$agl_main_root")"
+  [[ "$agl_main_root_abs" == "$repo_root_abs" ]] \
+    || die ".agl MAIN_ROOT does not match current repo root"
+
+  # Validate WORKTREE path safety
+  require_safe_worktree_relpath "$worktree_val" "$slug"
+
+  # Compute and normalize worktree absolute path
+  local worktree_abs_raw="$agl_main_root_abs/$worktree_val"
+  [[ -d "$worktree_abs_raw" ]] || die "Worktree directory not found: $worktree_abs_raw"
+  local worktree_abs
+  worktree_abs="$(abs_path "$worktree_abs_raw")"
+
+  # Require worktree is within the repo's worktree root
+  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/worktrees/"* ]] \
+    || die "Unsafe WORKTREE path (escapes worktrees/)"
+
+  # Verify target is a worktree of the current repo (git common-dir check)
+  local repo_common repo_common_path repo_common_abs
+  repo_common="$(git -C "$repo_root_abs" rev-parse --git-common-dir)"
+  case "$repo_common" in
+    /*) repo_common_path="$repo_common" ;;
+    *)  repo_common_path="$repo_root_abs/$repo_common" ;;
+  esac
+  [[ -d "$repo_common_path" ]] || die "Invalid repo common git dir: $repo_common_path"
+  repo_common_abs="$(abs_path "$repo_common_path")"
+
+  local wt_common wt_common_path wt_common_abs
+  wt_common="$(git -C "$worktree_abs" rev-parse --git-common-dir)"
+  case "$wt_common" in
+    /*) wt_common_path="$wt_common" ;;
+    *)  wt_common_path="$worktree_abs/$wt_common" ;;
+  esac
+  [[ -d "$wt_common_path" ]] || die "Invalid worktree common git dir: $wt_common_path"
+  wt_common_abs="$(abs_path "$wt_common_path")"
+
+  [[ "$wt_common_abs" == "$repo_common_abs" ]] \
+    || die "Worktree does not belong to current repo (git common-dir mismatch)"
+
+  if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
+    die "Branch not found: $branch"
+  fi
+
+  local current_branch
+  current_branch="$(git -C "$worktree_abs" rev-parse --abbrev-ref HEAD)" \
+    || die "Invalid worktree: $worktree_abs"
+  if [[ "$current_branch" != "$branch" ]]; then
+    die "Worktree is on $current_branch (expected $branch)"
+  fi
+
+  # Check worktree is dirty
+  local wt_status
+  wt_status="$(git -C "$worktree_abs" status --porcelain)" \
+    || die "Invalid worktree: $worktree_abs"
+  [[ -n "$wt_status" ]] || die "Nothing to commit (working tree clean)"
+
+  # Build commit message
+  local msg
+  if [[ "$last_stage" == "fixer" ]]; then
+    local fix_round=$((round - 1))
+    if [[ "$fix_round" -le 1 ]]; then
+      msg="agl: $slug fixer"
     else
-      # Last hash was amended/rebased — replace it
-      local prefix="${existing%,*}"
-      if [[ "$prefix" == "$existing" ]]; then
-        # Only one hash was tracked, replace it entirely
-        sed_inplace "s|^COMMITS=.*|COMMITS=${hash}|" "$agl_file"
-      else
-        sed_inplace "s|^COMMITS=.*|COMMITS=${prefix},${hash}|" "$agl_file"
-      fi
-      echo "Tracked: $hash (replaced $last_hash)"
+      msg="agl: $slug fixer-r${fix_round}"
     fi
+  else
+    msg="agl: $slug $last_stage"
+  fi
+
+  # Stage and commit
+  git -C "$worktree_abs" add -A && git -C "$worktree_abs" commit -m "$msg"
+
+  # Record commit hash in .agl
+  local new_hash
+  new_hash="$(git -C "$worktree_abs" rev-parse --short HEAD)"
+  local existing_commits
+  existing_commits="$(read_meta_optional "$agl_file" COMMITS)"
+  if [[ -z "$existing_commits" ]]; then
+    echo "COMMITS=$new_hash" >> "$agl_file"
+  else
+    sed_inplace "s|^COMMITS=.*|COMMITS=${existing_commits},${new_hash}|" "$agl_file"
+  fi
+
+  echo "Committed: $msg ($new_hash)"
+}
+
+cmd_merge() {
+  local slug="" loop_dir="" no_delete=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dir)       require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
+      --no-delete) no_delete=true; shift ;;
+      -*)          die "Unknown option: $1" ;;
+      *)
+        if [[ -z "$slug" ]]; then
+          slug="$1"; shift
+        else
+          die "Unexpected argument: $1"
+        fi
+        ;;
+    esac
+  done
+
+  require_primary_worktree "agl merge"
+
+  local repo_root
+  repo_root="$(project_root)"
+  [[ -d "$repo_root" ]] || die "Invalid repo root: $repo_root"
+  local repo_root_abs
+  repo_root_abs="$(abs_path "$repo_root")"
+
+  # Find loop dir
+  if [[ -n "$loop_dir" ]]; then
+    : # use provided --dir
+  elif [[ -n "$slug" ]]; then
+    local candidate_worktree_abs="$repo_root_abs/work/agent-loop/worktrees/$slug"
+    [[ -d "$candidate_worktree_abs" ]] \
+      || die "Worktree not found for slug '$slug': $candidate_worktree_abs"
+    loop_dir="$(find_loop_dir_in "$candidate_worktree_abs")"
+  else
+    loop_dir="$(find_worktree_loop_dir)"
+    [[ -n "$loop_dir" ]] || die "No worktree-mode loop found"
+  fi
+
+  local agl_file="$loop_dir/.agl"
+  [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
+
+  # Read required .agl keys
+  local agl_main_root branch worktree_val feature_slug
+  agl_main_root="$(read_meta_optional "$agl_file" MAIN_ROOT)"
+  branch="$(read_meta_optional "$agl_file" BRANCH)"
+  worktree_val="$(read_meta_optional "$agl_file" WORKTREE)"
+  feature_slug="$(read_meta_optional "$agl_file" FEATURE_SLUG)"
+
+  if [[ -z "$agl_main_root" || -z "$branch" || -z "$worktree_val" || -z "$feature_slug" ]]; then
+    die "Not a worktree-mode loop (required keys missing)"
+  fi
+
+  local expected_branch="agl/$feature_slug"
+  if [[ "$branch" != "$expected_branch" ]]; then
+    die "Unexpected BRANCH in .agl: $branch (expected $expected_branch)"
+  fi
+
+  # Validate .agl MAIN_ROOT matches current repo
+  [[ -d "$agl_main_root" ]] || die "Invalid .agl MAIN_ROOT: $agl_main_root"
+  local agl_main_root_abs
+  agl_main_root_abs="$(abs_path "$agl_main_root")"
+  [[ "$agl_main_root_abs" == "$repo_root_abs" ]] \
+    || die ".agl MAIN_ROOT does not match current repo root"
+
+  # Validate WORKTREE path safety
+  require_safe_worktree_relpath "$worktree_val" "$feature_slug"
+
+  # Compute and normalize worktree absolute path
+  local worktree_abs_raw="$agl_main_root_abs/$worktree_val"
+  [[ -d "$worktree_abs_raw" ]] || die "Worktree directory not found: $worktree_abs_raw"
+  local worktree_abs
+  worktree_abs="$(abs_path "$worktree_abs_raw")"
+
+  # Require worktree is within the repo's worktree root
+  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/worktrees/"* ]] \
+    || die "Unsafe WORKTREE path (escapes worktrees/)"
+
+  # Verify target is a worktree of the current repo (git common-dir check)
+  local repo_common repo_common_path repo_common_abs
+  repo_common="$(git -C "$repo_root_abs" rev-parse --git-common-dir)"
+  case "$repo_common" in
+    /*) repo_common_path="$repo_common" ;;
+    *)  repo_common_path="$repo_root_abs/$repo_common" ;;
+  esac
+  [[ -d "$repo_common_path" ]] || die "Invalid repo common git dir: $repo_common_path"
+  repo_common_abs="$(abs_path "$repo_common_path")"
+
+  local wt_common wt_common_path wt_common_abs
+  wt_common="$(git -C "$worktree_abs" rev-parse --git-common-dir)"
+  case "$wt_common" in
+    /*) wt_common_path="$wt_common" ;;
+    *)  wt_common_path="$worktree_abs/$wt_common" ;;
+  esac
+  [[ -d "$wt_common_path" ]] || die "Invalid worktree common git dir: $wt_common_path"
+  wt_common_abs="$(abs_path "$wt_common_path")"
+
+  [[ "$wt_common_abs" == "$repo_common_abs" ]] \
+    || die "Worktree does not belong to current repo (git common-dir mismatch)"
+
+  if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
+    die "Branch not found: $branch"
+  fi
+
+  # Preflight: worktree must be clean
+  local wt_status
+  wt_status="$(git -C "$worktree_abs" status --porcelain)" \
+    || die "Invalid worktree: $worktree_abs"
+  [[ -z "$wt_status" ]] \
+    || die "Worktree has uncommitted changes. Run 'agl commit' or discard changes first."
+
+  # Preflight: primary worktree must be clean
+  local primary_status
+  primary_status="$(git status --porcelain)" \
+    || die "Cannot check primary worktree status"
+  [[ -z "$primary_status" ]] \
+    || die "Primary worktree has uncommitted changes. Commit or stash them first."
+
+  # Squash merge
+  if ! git merge --squash "$branch"; then
+    echo "Merge conflicts detected." >&2
+    echo "Resolve conflicts, then: git add -A && git commit" >&2
+    echo "To abort: git reset --hard HEAD" >&2
+    exit 1
+  fi
+
+  # Commit (opens editor for user message)
+  if ! git commit; then
+    echo "Commit aborted. Squash is staged but not committed." >&2
+    echo "To finish: rerun 'git commit'" >&2
+    echo "To abandon: git reset --hard HEAD" >&2
+    exit 1
+  fi
+
+  # Cleanup (only after successful commit)
+  if [[ "$no_delete" == true ]]; then
+    echo "Merged $branch (worktree and branch preserved with --no-delete)"
+  else
+    git worktree remove "$worktree_abs"
+    if [[ "$branch" != "$expected_branch" ]]; then
+      die "Unexpected BRANCH in .agl: $branch (expected $expected_branch)"
+    fi
+    git branch -D "$branch"
+    echo "Merged and cleaned up $branch"
   fi
 }
 
@@ -626,7 +1146,8 @@ case "$command" in
   enhance) cmd_enhance "$@" ;;
   review)  cmd_review "$@" ;;
   fix)     cmd_fix "$@" ;;
-  track)   cmd_track "$@" ;;
+  commit)  cmd_commit "$@" ;;
+  merge)   cmd_merge "$@" ;;
   -h|--help) usage 0 ;;
   *)       die "Unknown command: $command. Run 'agl --help' for usage." ;;
 esac

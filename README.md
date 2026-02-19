@@ -36,7 +36,7 @@ agl commit
 agl merge add-auth --agent claude
 ```
 
-`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. `agl merge` opens the normal commit editor by default; pass `--agent` to draft a commit message and open `git commit -t` with that draft.
+`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. `agl merge` opens the normal commit editor by default; pass `--agent` to draft a commit message and open `git commit -e -F` with that draft.
 
 ---
 
@@ -122,7 +122,7 @@ agl merge [<slug>] --agent <agent> [...] Squash-merge with agent-drafted message
 2. **`agl work <agent>`** — runs the agent with the most recent prompt in the worktree
 3. **`agl commit`** — stages all changes and commits with a mechanical message (e.g. `agl: add-auth worker`)
 4. **`agl enhance <agent>`**, **`agl review`**, **`agl fix <agent>`** — scaffold prompts and optionally run agents
-5. **`agl merge`** — squash-merges the worktree branch and opens the commit editor for a manual message; with `--agent`, it writes `context/squash-diff.patch`, runs a commit-writer prompt, and opens `git commit -t` with the draft before cleanup
+5. **`agl merge`** — squash-merges the worktree branch and opens the commit editor for a manual message; with `--agent`, it writes `context/squash-diff.patch`, runs a commit-writer prompt, and opens `git commit -e -F` with the draft before cleanup
 
 This keeps agent changes isolated from unrelated work, makes intermediate commits mechanical, and produces a single squash commit with a meaningful message at the end.
 

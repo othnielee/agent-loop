@@ -1413,9 +1413,9 @@ cmd_merge() {
       echo "To abandon: git reset --hard HEAD" >&2
       exit 1
     fi
-  elif ! git commit -t "$draft_path"; then
+  elif ! git commit -e -F "$draft_path"; then
     echo "Commit aborted. Squash is staged but not committed." >&2
-    echo "To finish: rerun 'git commit -t \"$draft_path\"'" >&2
+    echo "To finish: rerun 'git commit -e -F \"$draft_path\"'" >&2
     echo "To abandon: git reset --hard HEAD" >&2
     exit 1
   fi

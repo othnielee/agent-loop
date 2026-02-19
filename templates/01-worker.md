@@ -37,7 +37,7 @@ match them exactly. Do NOT write code based on general framework
 knowledge or patterns from other projects.
 
 **Before creating any file, you MUST:**
-1. Find 2-3 existing files of the same type (DTO, pipe, service, controller, test, model, constants, utils) using Glob/Grep
+1. Find 2-3 existing files of the same type (DTO, module, service, controller, test, model, constants, utils) using Glob/Grep
 2. Read them carefully and note their structure, style, and patterns
 3. Match those patterns in your implementation
 

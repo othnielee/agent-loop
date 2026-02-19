@@ -39,13 +39,14 @@ All logic lives in a single script. Key commands map to functions:
 | `agl enhance [<agent>]` | `cmd_enhance` | Generates enhancer prompt; optionally runs agent |
 | `agl review [<agent>]` | `cmd_review` | Generates reviewer prompt (auto-injects `-r`); optionally runs agent |
 | `agl fix [<agent>]` | `cmd_fix` | Finds latest review output, generates fixer prompt, increments ROUND; optionally runs agent |
-| `agl merge [<slug>]` | `cmd_merge` | Squash-merges worktree branch into current branch, cleans up |
+| `agl merge [<slug>]` | `cmd_merge` | Squash-merges branch and opens manual commit editor |
+| `agl merge [<slug>] --agent <agent> [...]` | `cmd_merge` | Squash-merges branch, drafts commit message via agent, opens `git commit -t`, cleans up |
 
 Helper functions: `find_loop_dir`, `read_meta`/`read_meta_optional`, `sed_escape`/`sed_inplace` (portable BSD/GNU), `slug_to_name`, `print_commands`, `run_agent`.
 
 ### Templates (`templates/`)
 
-Four Markdown templates with `{{PLACEHOLDER}}` syntax filled by `sed`:
+Five Markdown templates with `{{PLACEHOLDER}}` syntax filled by `sed`:
 
 | File | Agent Role | Mode |
 |------|-----------|------|
@@ -53,6 +54,7 @@ Four Markdown templates with `{{PLACEHOLDER}}` syntax filled by `sed`:
 | `02-enhancer.md` | Surgical improvements | Read-Write |
 | `03-reviewer.md` | Code review | Read-Only |
 | `04-fixer.md` | Apply review findings | Read-Write |
+| `05-commit-writer.md` | Draft squash commit message | Read-Write (scoped) |
 
 #### Template-writing tips
 
@@ -91,4 +93,4 @@ work/agent-loop/<timestamp>-<slug>/
 - Portable sed handling (BSD/GNU) via `sed_inplace` helper
 - `.agl` metadata files use simple `KEY=value` format, one per line
 - Template placeholders use `{{DOUBLE_BRACE}}` syntax
-- Commit messages: imperative mood, max 50 char subject, no conventional-commit prefixes (see `/commit-message` slash command)
+- Commit messages: imperative mood, max 50 char subject, conventional commit format in the merge draft template

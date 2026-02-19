@@ -24,7 +24,7 @@ Commands:
   enhance [<agent>]     Generate enhancer prompt (optionally run agent)
   review [<agent>]      Generate reviewer prompt (optionally run agent)
   fix [<agent>]         Generate fixer prompt (optionally run agent)
-  merge [<slug>]        Squash-merge worktree branch into the current branch
+  merge [<slug>]        Squash-merge branch (optional draft message)
 
 Init options:
   --plan <path>         Path to the plan file (required)
@@ -59,7 +59,10 @@ Fix options:
   [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agw)
 
 Merge options:
-  [<slug>]              Feature slug to merge (default: most recent)
+  [<slug>]              Feature slug to merge (default: most recent loop)
+  --agent <agent> [...] Agent name and flags for commit-message drafting
+                        Place --dir/--no-delete before --agent.
+                        Args after --agent <agent> pass through to agw.
   --dir <path>          Loop directory (default: most recent)
   --no-delete           Preserve worktree and branch after merge
 
@@ -72,7 +75,8 @@ Examples:
   agl review                               # scaffold only (interactive)
   agl fix claude --fast                    # scaffold + run with flags
   agl commit
-  agl merge add-auth
+  agl merge add-auth                        # manual message
+  agl merge add-auth --agent claude --fast # draft + merge
 EOF
   exit "${1:-1}"
 }
@@ -337,6 +341,27 @@ find_latest_prompt_file() {
   printf '%s' "$latest_prompt"
 }
 
+# Build a comma-separated list of markdown report paths in output/.
+collect_output_reports() {
+  local output_dir="$1"
+  local report_paths=""
+  local report_file
+
+  while IFS= read -r report_file; do
+    if [[ -n "$report_paths" ]]; then
+      report_paths="$report_paths, $report_file"
+    else
+      report_paths="$report_file"
+    fi
+  done < <(find "$output_dir" -mindepth 1 -maxdepth 1 -type f -name '*.md' | sort)
+
+  if [[ -z "$report_paths" ]]; then
+    report_paths="None"
+  fi
+
+  printf '%s' "$report_paths"
+}
+
 # Read a required key from the .agl metadata file. Dies if missing.
 read_meta() {
   local agl_file="$1" key="$2"
@@ -437,6 +462,86 @@ run_agent() {
 
   cd "$worktree_abs"
   exec agw "$@" "$prompt_abs"
+}
+
+# Execute agw in a specific directory and return to caller.
+run_agent_once() {
+  local run_dir="$1" prompt_path="$2"
+  shift 2
+  # Remaining args: agent name and flags for agw
+
+  local prompt_abs
+  case "$prompt_path" in
+    /*) prompt_abs="$prompt_path" ;;
+    *)  prompt_abs="$(pwd -P)/$prompt_path" ;;
+  esac
+  [[ -f "$prompt_abs" ]] || die "Prompt file not found: $prompt_abs"
+
+  local run_dir_abs
+  run_dir_abs="$(abs_path "$run_dir")"
+
+  (
+    cd "$run_dir_abs"
+    agw "$@" "$prompt_abs"
+  )
+}
+
+# Generate commit-message draft prompt, run agent, and return draft path.
+create_commit_draft() {
+  local loop_dir="$1" agl_file="$2"
+  shift 2
+  local agent_args=("$@")
+
+  local root
+  root="$(project_root)"
+  root="$(abs_path "$root")"
+
+  local slug feature_name date plan_path_rel
+  slug="$(read_meta "$agl_file" FEATURE_SLUG)"
+  feature_name="$(slug_to_name "$slug")"
+  date="$(read_meta "$agl_file" DATE)"
+  plan_path_rel="$(read_meta "$agl_file" PLAN_PATH)"
+  local abs_plan_path="$root/$plan_path_rel"
+
+  local output_dir="$loop_dir/output"
+  local context_dir="$loop_dir/context"
+  local prompts_dir="$loop_dir/prompts"
+  mkdir -p "$output_dir" "$context_dir" "$prompts_dir"
+
+  local handoff_paths
+  handoff_paths="$(collect_output_reports "$output_dir")"
+
+  local commit_hashes
+  commit_hashes="$(read_meta_optional "$agl_file" COMMITS)"
+  [[ -n "$commit_hashes" ]] || commit_hashes="None"
+
+  local squash_diff_path="$context_dir/squash-diff.patch"
+  git -C "$root" diff --staged > "$squash_diff_path"
+
+  local commit_message_path="$output_dir/COMMIT_MESSAGE-${slug}.txt"
+  : > "$commit_message_path"
+
+  local template="$TEMPLATE_DIR/05-commit-writer.md"
+  [[ -f "$template" ]] || die "Template not found: $template"
+
+  local prompt="$prompts_dir/05-commit-writer.md"
+  sed \
+    -e "s|{{DATE}}|$(sed_escape "$date")|g" \
+    -e "s|{{FEATURE_SLUG}}|$(sed_escape "$slug")|g" \
+    -e "s|{{FEATURE_NAME}}|$(sed_escape "$feature_name")|g" \
+    -e "s|{{PLAN_PATH}}|$(sed_escape "$abs_plan_path")|g" \
+    -e "s|{{HANDOFF_PATHS}}|$(sed_escape "$handoff_paths")|g" \
+    -e "s|{{COMMIT_HASHES}}|$(sed_escape "$commit_hashes")|g" \
+    -e "s|{{SQUASH_DIFF_PATH}}|$(sed_escape "$squash_diff_path")|g" \
+    -e "s|{{COMMIT_MESSAGE_PATH}}|$(sed_escape "$commit_message_path")|g" \
+    "$template" > "$prompt"
+
+  run_agent_once "$root" "$prompt" "${agent_args[@]}"
+
+  [[ -s "$commit_message_path" ]] \
+    || die "Commit message draft was not created: $commit_message_path"
+
+  printf '%s' "$commit_message_path"
 }
 
 # ------------------------------------------------------------
@@ -1147,11 +1252,19 @@ cmd_commit() {
 
 cmd_merge() {
   local slug="" loop_dir="" no_delete=false
+  local agent_args=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dir)       require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
       --no-delete) no_delete=true; shift ;;
+      --agent)
+        require_arg "$1" "$#" "${2-}"
+        agent_args=("$2")
+        shift 2
+        agent_args+=("$@")
+        break
+        ;;
       -*)          die "Unknown option: $1" ;;
       *)
         if [[ -z "$slug" ]]; then
@@ -1287,10 +1400,22 @@ cmd_merge() {
     exit 1
   fi
 
+  local draft_path=""
+  if [[ ${#agent_args[@]} -gt 0 ]]; then
+    draft_path="$(create_commit_draft "$loop_dir" "$agl_file" "${agent_args[@]}")"
+  fi
+
   # Commit (opens editor for user message)
-  if ! git commit; then
+  if [[ ${#agent_args[@]} -eq 0 ]]; then
+    if ! git commit; then
+      echo "Commit aborted. Squash is staged but not committed." >&2
+      echo "To finish: rerun 'git commit'" >&2
+      echo "To abandon: git reset --hard HEAD" >&2
+      exit 1
+    fi
+  elif ! git commit -t "$draft_path"; then
     echo "Commit aborted. Squash is staged but not committed." >&2
-    echo "To finish: rerun 'git commit'" >&2
+    echo "To finish: rerun 'git commit -t \"$draft_path\"'" >&2
     echo "To abandon: git reset --hard HEAD" >&2
     exit 1
   fi

@@ -33,10 +33,10 @@ agl fix claude
 agl commit
 
 # Squash-merge into the current branch
-agl merge add-auth
+agl merge add-auth --agent claude
 ```
 
-`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. The only manual step is the final squash-merge commit message.
+`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. `agl merge` opens the normal commit editor by default; pass `--agent` to draft a commit message and open `git commit -t` with that draft.
 
 ---
 
@@ -51,7 +51,8 @@ agl commit                              Stage and commit changes in the worktree
 agl enhance [<agent>]                   Generate enhancer prompt (optionally run agent)
 agl review [<agent>]                    Generate reviewer prompt (optionally run agent)
 agl fix [<agent>]                       Generate fixer prompt (optionally run agent)
-agl merge [<slug>]                      Squash-merge worktree branch into the current branch
+agl merge [<slug>]                      Squash-merge with manual commit message
+agl merge [<slug>] --agent <agent> [...] Squash-merge with agent-drafted message
 ```
 
 ### Init Options
@@ -109,6 +110,7 @@ agl merge [<slug>]                      Squash-merge worktree branch into the cu
 | Option | Description |
 |--------|-------------|
 | `[<slug>]` | Feature slug to merge (default: most recent loop) |
+| `--agent <agent> [...]` | Agent name and flags for commit-message drafting; place `--dir`/`--no-delete` before `--agent`, and pass all agent flags after `--agent <agent>` |
 | `--dir <path>` | Loop directory (default: most recent) |
 | `--no-delete` | Preserve worktree and branch after merge |
 
@@ -120,7 +122,7 @@ agl merge [<slug>]                      Squash-merge worktree branch into the cu
 2. **`agl work <agent>`** — runs the agent with the most recent prompt in the worktree
 3. **`agl commit`** — stages all changes and commits with a mechanical message (e.g. `agl: add-auth worker`)
 4. **`agl enhance <agent>`**, **`agl review`**, **`agl fix <agent>`** — scaffold prompts and optionally run agents
-5. **`agl merge`** — squash-merges the worktree branch into the current branch, opens the editor for a user-authored commit message, then removes the worktree and branch
+5. **`agl merge`** — squash-merges the worktree branch and opens the commit editor for a manual message; with `--agent`, it writes `context/squash-diff.patch`, runs a commit-writer prompt, and opens `git commit -t` with the draft before cleanup
 
 This keeps agent changes isolated from unrelated work, makes intermediate commits mechanical, and produces a single squash commit with a meaningful message at the end.
 
@@ -214,6 +216,8 @@ All templates use `{{PLACEHOLDER}}` syntax. `agl` fills these automatically:
 | `{{FILE_PATHS}}` | Flag | `--files`, default "None" |
 | `{{REVIEW_CHECKLIST}}` | Flag | `--checklist`, default "None" |
 | `{{ADDITIONAL_INSTRUCTIONS}}` | Flag | `--instructions`, default "None" |
+| `{{SQUASH_DIFF_PATH}}` | Yes (merge draft) | Staged squash diff written to `context/squash-diff.patch` |
+| `{{COMMIT_MESSAGE_PATH}}` | Yes (merge draft) | Draft file written by commit-writer agent |
 
 ---
 
@@ -227,12 +231,14 @@ work/agent-loop/
     ├── .agl                   # metadata (slug, plan, date, round, branch, worktree, etc.)
     ├── context/
     │   ├── plan.md            # snapshot of --plan file
-    │   └── design.md          # snapshot of --context files
+    │   ├── design.md          # snapshot of --context files
+    │   └── squash-diff.patch  # staged squash diff for commit drafting
     ├── prompts/
     │   ├── 01-worker.md
     │   ├── 02-enhancer.md
     │   ├── 03-reviewer.md
     │   ├── 04-fixer.md
+    │   ├── 05-commit-writer.md
     │   ├── 03-reviewer-r2.md  # round 2
     │   └── 04-fixer-r2.md     # round 2
     ├── output/
@@ -240,6 +246,7 @@ work/agent-loop/
     │   ├── ENHANCE-add-auth.md
     │   ├── REVIEW-add-auth.md
     │   ├── FIX-add-auth.md
+    │   ├── COMMIT_MESSAGE-add-auth.txt
     │   ├── REVIEW-r2-add-auth.md
     │   └── FIX-r2-add-auth.md
     └── worktree/              # git worktree (isolated checkout on agl/add-auth branch)

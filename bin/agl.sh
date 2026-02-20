@@ -260,42 +260,68 @@ resolve_loop_dir() {
   printf '%s' "$resolved_loop_dir"
 }
 
-# Normalize a comma-separated context path list to absolute paths.
-# Relative paths resolve from the caller's working directory.
-normalize_context_paths() {
+# Snapshot context files into context_dir, returning comma-separated absolute
+# paths of the copies.  Handles basename deduplication (counter suffix).
+# Returns "None" when input is "None".
+snapshot_context_files() {
   local context_paths="$1"
   local caller_pwd="$2"
+  local context_dir="$3"
 
   if [[ "$context_paths" == "None" ]]; then
-    printf '%s' "$context_paths"
+    printf '%s' "None"
     return 0
   fi
 
-  local normalized=""
-  local IFS=','
-  local context_path
-  for context_path in $context_paths; do
-    context_path="$(printf '%s' "$context_path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-    [[ -n "$context_path" ]] || continue
+  mkdir -p "$context_dir"
 
-    local context_abs
-    case "$context_path" in
-      /*) context_abs="$context_path" ;;
-      *)  context_abs="$caller_pwd/$context_path" ;;
+  local result=""
+  local IFS=','
+  local ctx_path
+  for ctx_path in $context_paths; do
+    ctx_path="$(printf '%s' "$ctx_path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -n "$ctx_path" ]] || continue
+
+    local ctx_abs
+    case "$ctx_path" in
+      /*) ctx_abs="$ctx_path" ;;
+      *)  ctx_abs="$caller_pwd/$ctx_path" ;;
     esac
 
-    if [[ -n "$normalized" ]]; then
-      normalized="$normalized, $context_abs"
+    [[ -f "$ctx_abs" && -r "$ctx_abs" ]] \
+      || die "Context file not found or not readable: $ctx_path"
+
+    local ctx_base ctx_dest
+    ctx_base="$(basename "$ctx_abs")"
+    ctx_dest="$ctx_base"
+    if [[ -f "$context_dir/$ctx_dest" ]]; then
+      local name ext counter
+      if [[ "$ctx_base" == *.* ]]; then
+        name="${ctx_base%.*}"
+        ext=".${ctx_base##*.}"
+      else
+        name="$ctx_base"
+        ext=""
+      fi
+      counter=2
+      while [[ -f "$context_dir/${name}-${counter}${ext}" ]]; do
+        counter=$((counter + 1))
+      done
+      ctx_dest="${name}-${counter}${ext}"
+    fi
+    cp "$ctx_abs" "$context_dir/$ctx_dest"
+    if [[ -n "$result" ]]; then
+      result="$result, $context_dir/$ctx_dest"
     else
-      normalized="$context_abs"
+      result="$context_dir/$ctx_dest"
     fi
   done
 
-  if [[ -z "$normalized" ]]; then
-    normalized="None"
+  if [[ -z "$result" ]]; then
+    result="None"
   fi
 
-  printf '%s' "$normalized"
+  printf '%s' "$result"
 }
 
 # Return file mtime epoch seconds (portable across BSD/GNU stat).
@@ -660,46 +686,8 @@ cmd_init() {
   local abs_plan_path="$abs_context_dir/$plan_dest"
 
   # Snapshot --context files into context/ (resolved from invocation directory)
-  local abs_context_paths="None"
-  if [[ "$other_context" != "None" ]]; then
-    abs_context_paths=""
-    local IFS=','
-    for ctx_path in $other_context; do
-      ctx_path="$(printf '%s' "$ctx_path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-
-      local ctx_abs
-      case "$ctx_path" in
-        /*) ctx_abs="$ctx_path" ;;
-        *)  ctx_abs="$caller_pwd/$ctx_path" ;;
-      esac
-
-      local ctx_base ctx_dest
-      ctx_base="$(basename "$ctx_abs")"
-      ctx_dest="$ctx_base"
-      # Disambiguate if basename already exists in context/
-      if [[ -f "$context_dir/$ctx_dest" ]]; then
-        local name ext counter
-        if [[ "$ctx_base" == *.* ]]; then
-          name="${ctx_base%.*}"
-          ext=".${ctx_base##*.}"
-        else
-          name="$ctx_base"
-          ext=""
-        fi
-        counter=2
-        while [[ -f "$context_dir/${name}-${counter}${ext}" ]]; do
-          counter=$((counter + 1))
-        done
-        ctx_dest="${name}-${counter}${ext}"
-      fi
-      cp "$ctx_abs" "$context_dir/$ctx_dest"
-      if [[ -n "$abs_context_paths" ]]; then
-        abs_context_paths="$abs_context_paths, $abs_context_dir/$ctx_dest"
-      else
-        abs_context_paths="$abs_context_dir/$ctx_dest"
-      fi
-    done
-  fi
+  local abs_context_paths
+  abs_context_paths="$(snapshot_context_files "$other_context" "$caller_pwd" "$context_dir")"
 
   # Write .agl metadata (PLAN_PATH stored as relative for portability in metadata)
   local loop_dir_rel="${loop_dir#"$main_root"/}"
@@ -786,11 +774,15 @@ cmd_enhance() {
 
   local abs_output_dir="$loop_dir/output"
   local abs_plan_path="$root/$plan_path_rel"
-  local handoff_path="$abs_output_dir/HANDOFF-${slug}.md"
+  local handoff_path="None"
+  if [[ -f "$abs_output_dir/HANDOFF-${slug}.md" ]]; then
+    handoff_path="$abs_output_dir/HANDOFF-${slug}.md"
+  fi
   local feature_name
   feature_name="$(slug_to_name "$slug")"
+  local context_dir="$loop_dir/context"
   local abs_other_context
-  abs_other_context="$(normalize_context_paths "$other_context" "$caller_pwd")"
+  abs_other_context="$(snapshot_context_files "$other_context" "$caller_pwd" "$context_dir")"
 
   local worktree_rel
   worktree_rel="$(read_meta_optional "$agl_file" WORKTREE)"
@@ -869,8 +861,9 @@ cmd_review() {
   local abs_plan_path="$root/$plan_path_rel"
   local feature_name
   feature_name="$(slug_to_name "$slug")"
+  local context_dir="$loop_dir/context"
   local abs_other_context
-  abs_other_context="$(normalize_context_paths "$other_context" "$caller_pwd")"
+  abs_other_context="$(snapshot_context_files "$other_context" "$caller_pwd" "$context_dir")"
 
   local worktree_rel
   worktree_rel="$(read_meta_optional "$agl_file" WORKTREE)"
@@ -998,8 +991,9 @@ cmd_fix() {
   local abs_plan_path="$root/$plan_path_rel"
   local feature_name
   feature_name="$(slug_to_name "$slug")"
+  local context_dir="$loop_dir/context"
   local abs_other_context
-  abs_other_context="$(normalize_context_paths "$other_context" "$caller_pwd")"
+  abs_other_context="$(snapshot_context_files "$other_context" "$caller_pwd" "$context_dir")"
 
   local worktree_rel
   worktree_rel="$(read_meta_optional "$agl_file" WORKTREE)"

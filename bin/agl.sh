@@ -231,6 +231,9 @@ find_loop_dir() {
         grep -q "^BRANCH=" "$d/.agl" 2>/dev/null &&
         grep -q "^WORKTREE=" "$d/.agl" 2>/dev/null &&
         grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
+        local wt_val
+        wt_val="$(grep "^WORKTREE=" "$d/.agl" 2>/dev/null | head -1 | cut -d'=' -f2-)"
+        [[ -d "$root/$wt_val" ]] || continue
         echo "$d"
         break
       fi
@@ -1352,7 +1355,7 @@ cmd_commit() {
   if [[ -z "$existing_commits" ]]; then
     echo "COMMITS=$new_hash" >>"$agl_file"
   else
-    sed_inplace "s|^COMMITS=.*|COMMITS=${existing_commits},${new_hash}|" "$agl_file"
+    sed_inplace "s|^COMMITS=.*|COMMITS=${existing_commits}, ${new_hash}|" "$agl_file"
   fi
 
   echo "Committed: $msg ($new_hash)"
@@ -1613,12 +1616,13 @@ cmd_drop() {
   local agl_file="$loop_dir/.agl"
   [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
 
-  local branch worktree_val feature_slug
+  local agl_main_root branch worktree_val feature_slug
+  agl_main_root="$(read_meta_optional "$agl_file" MAIN_ROOT)"
   branch="$(read_meta_optional "$agl_file" BRANCH)"
   worktree_val="$(read_meta_optional "$agl_file" WORKTREE)"
   feature_slug="$(read_meta_optional "$agl_file" FEATURE_SLUG)"
 
-  if [[ -z "$branch" || -z "$worktree_val" || -z "$feature_slug" ]]; then
+  if [[ -z "$agl_main_root" || -z "$branch" || -z "$worktree_val" || -z "$feature_slug" ]]; then
     die "Not a worktree-mode loop (required keys missing)"
   fi
 
@@ -1626,6 +1630,13 @@ cmd_drop() {
   if [[ "$branch" != "$expected_branch" ]]; then
     die "Unexpected BRANCH in .agl: $branch (expected $expected_branch)"
   fi
+
+  # Validate .agl MAIN_ROOT matches current repo
+  [[ -d "$agl_main_root" ]] || die "Invalid .agl MAIN_ROOT: $agl_main_root"
+  local agl_main_root_abs
+  agl_main_root_abs="$(abs_path "$agl_main_root")"
+  [[ "$agl_main_root_abs" == "$repo_root_abs" ]] ||
+    die ".agl MAIN_ROOT does not match current repo root"
 
   # Validate WORKTREE path safety
   local loop_dir_rel="${loop_dir#"$repo_root_abs"/}"

@@ -25,6 +25,7 @@ Commands:
   review [<agent>]      Generate reviewer prompt (optionally run agent)
   fix [<agent>]         Generate fixer prompt (optionally run agent)
   merge [<slug>]        Squash-merge branch (optional draft message)
+  drop [<slug>]         Remove worktree and branch (abandon work)
 
 Init options:
   --plan <path>         Path to the plan file (required)
@@ -66,6 +67,11 @@ Merge options:
   --dir <path>          Loop directory (default: most recent)
   --no-delete           Preserve worktree and branch after merge
 
+Drop options:
+  [<slug>]              Feature slug to drop (default: most recent loop)
+  --dir <path>          Loop directory (default: most recent)
+  --all                 Also remove the loop directory (prompts, output, context)
+
 Examples:
   agl init add-auth --plan work/wip/task-1.md
   agl work claude                          # run agent with most recent prompt
@@ -77,6 +83,8 @@ Examples:
   agl commit
   agl merge add-auth                        # manual message
   agl merge add-auth --agent claude --fast # draft + merge
+  agl drop add-auth                        # remove worktree + branch
+  agl drop add-auth --all                  # also remove loop directory
 EOF
   exit "${1:-1}"
 }
@@ -84,7 +92,10 @@ EOF
 # ------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------
-die() { echo "Error: $*" >&2; exit 1; }
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
 
 # Validate that a flag has a non-flag value argument following it.
 # Must be called BEFORE expanding $2 — only uses $# to check.
@@ -119,7 +130,7 @@ slug_to_name() {
 sed_inplace() {
   local expr="$1" file="$2"
   local tmp="${file}.tmp.$$"
-  sed "$expr" "$file" > "$tmp" && mv "$tmp" "$file"
+  sed "$expr" "$file" >"$tmp" && mv "$tmp" "$file"
 }
 
 # Escape a string for use as a sed replacement value.
@@ -142,8 +153,8 @@ abs_path() {
 # Takes the command name as $1 for the error message.
 require_primary_worktree() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not in a git repository"
-  [[ "$(git rev-parse --git-dir)" == "$(git rev-parse --git-common-dir)" ]] \
-    || die "$1 must run from the primary worktree, not a linked worktree."
+  [[ "$(git rev-parse --git-dir)" == "$(git rev-parse --git-common-dir)" ]] ||
+    die "$1 must run from the primary worktree, not a linked worktree."
 }
 
 # Hard-stop if a path is not ignored by git.
@@ -151,8 +162,8 @@ require_ignored() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not in a git repository"
   local root
   root="$(project_root)"
-  git -C "$root" check-ignore -q -- "$1" \
-    || die "$1 must be in .gitignore or .git/info/exclude before proceeding."
+  git -C "$root" check-ignore -q -- "$1" ||
+    die "$1 must be in .gitignore or .git/info/exclude before proceeding."
 }
 
 # Advisory warning for uncommitted changes. Non-blocking, cannot exit the script.
@@ -176,7 +187,7 @@ update_last_stage() {
   if [[ -n "$existing" ]]; then
     sed_inplace "s|^LAST_STAGE=.*|LAST_STAGE=$stage|" "$agl_file"
   else
-    echo "LAST_STAGE=$stage" >> "$agl_file"
+    echo "LAST_STAGE=$stage" >>"$agl_file"
   fi
 }
 
@@ -216,10 +227,10 @@ find_loop_dir() {
   if [[ -d "$loop_base" ]]; then
     local latest
     latest="$(find "$loop_base" -mindepth 1 -maxdepth 1 -type d | sort -r | while read -r d; do
-      if [[ -f "$d/.agl" ]] \
-        && grep -q "^BRANCH=" "$d/.agl" 2>/dev/null \
-        && grep -q "^WORKTREE=" "$d/.agl" 2>/dev/null \
-        && grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
+      if [[ -f "$d/.agl" ]] &&
+        grep -q "^BRANCH=" "$d/.agl" 2>/dev/null &&
+        grep -q "^WORKTREE=" "$d/.agl" 2>/dev/null &&
+        grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
         echo "$d"
         break
       fi
@@ -244,8 +255,8 @@ resolve_loop_dir() {
     resolved_loop_dir="$(find_loop_dir)"
   else
     case "$loop_dir_input" in
-      /*) resolved_loop_dir="$loop_dir_input" ;;
-      *)  resolved_loop_dir="$(pwd -P)/$loop_dir_input" ;;
+    /*) resolved_loop_dir="$loop_dir_input" ;;
+    *) resolved_loop_dir="$(pwd -P)/$loop_dir_input" ;;
     esac
     [[ -d "$resolved_loop_dir" ]] || die "Loop directory not found: $loop_dir_input"
   fi
@@ -254,8 +265,8 @@ resolve_loop_dir() {
   local root
   root="$(project_root)"
   root="$(abs_path "$root")"
-  [[ "$resolved_loop_dir" == "$root/work/agent-loop/"* ]] \
-    || die "Loop directory must be under $root/work/agent-loop"
+  [[ "$resolved_loop_dir" == "$root/work/agent-loop/"* ]] ||
+    die "Loop directory must be under $root/work/agent-loop"
 
   printf '%s' "$resolved_loop_dir"
 }
@@ -284,12 +295,12 @@ snapshot_context_files() {
 
     local ctx_abs
     case "$ctx_path" in
-      /*) ctx_abs="$ctx_path" ;;
-      *)  ctx_abs="$caller_pwd/$ctx_path" ;;
+    /*) ctx_abs="$ctx_path" ;;
+    *) ctx_abs="$caller_pwd/$ctx_path" ;;
     esac
 
-    [[ -f "$ctx_abs" && -r "$ctx_abs" ]] \
-      || die "Context file not found or not readable: $ctx_path"
+    [[ -f "$ctx_abs" && -r "$ctx_abs" ]] ||
+      die "Context file not found or not readable: $ctx_path"
 
     local ctx_base ctx_dest
     ctx_base="$(basename "$ctx_abs")"
@@ -417,8 +428,8 @@ print_commands() {
 
   local prompt_abs
   case "$prompt_path" in
-    /*) prompt_abs="$prompt_path" ;;
-    *)  prompt_abs="$(pwd -P)/$prompt_path" ;;
+  /*) prompt_abs="$prompt_path" ;;
+  *) prompt_abs="$(pwd -P)/$prompt_path" ;;
   esac
 
   local rel_path="$prompt_abs"
@@ -470,8 +481,8 @@ run_agent() {
 
   local prompt_abs
   case "$prompt_path" in
-    /*) prompt_abs="$prompt_path" ;;
-    *)  prompt_abs="$(pwd -P)/$prompt_path" ;;
+  /*) prompt_abs="$prompt_path" ;;
+  *) prompt_abs="$(pwd -P)/$prompt_path" ;;
   esac
   [[ -f "$prompt_abs" ]] || die "Prompt file not found: $prompt_abs"
 
@@ -483,8 +494,8 @@ run_agent() {
   [[ -d "$worktree_abs_raw" ]] || die "Worktree directory not found: $worktree_abs_raw"
   local worktree_abs
   worktree_abs="$(abs_path "$worktree_abs_raw")"
-  [[ "$worktree_abs" == "$root/work/agent-loop/"* ]] \
-    || die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  [[ "$worktree_abs" == "$root/work/agent-loop/"* ]] ||
+    die "Unsafe WORKTREE path (escapes work/agent-loop/)"
 
   cd "$worktree_abs"
   exec agw "$@" "$prompt_abs"
@@ -498,8 +509,8 @@ run_agent_once() {
 
   local prompt_abs
   case "$prompt_path" in
-    /*) prompt_abs="$prompt_path" ;;
-    *)  prompt_abs="$(pwd -P)/$prompt_path" ;;
+  /*) prompt_abs="$prompt_path" ;;
+  *) prompt_abs="$(pwd -P)/$prompt_path" ;;
   esac
   [[ -f "$prompt_abs" ]] || die "Prompt file not found: $prompt_abs"
 
@@ -542,10 +553,10 @@ create_commit_draft() {
   [[ -n "$commit_hashes" ]] || commit_hashes="None"
 
   local squash_diff_path="$context_dir/squash-diff.patch"
-  git -C "$root" diff --staged > "$squash_diff_path"
+  git -C "$root" diff --staged >"$squash_diff_path"
 
   local commit_message_path="$output_dir/COMMIT_MESSAGE-${slug}.txt"
-  : > "$commit_message_path"
+  : >"$commit_message_path"
 
   local template="$TEMPLATE_DIR/05-commit-writer.md"
   [[ -f "$template" ]] || die "Template not found: $template"
@@ -560,12 +571,12 @@ create_commit_draft() {
     -e "s|{{COMMIT_HASHES}}|$(sed_escape "$commit_hashes")|g" \
     -e "s|{{SQUASH_DIFF_PATH}}|$(sed_escape "$squash_diff_path")|g" \
     -e "s|{{COMMIT_MESSAGE_PATH}}|$(sed_escape "$commit_message_path")|g" \
-    "$template" > "$prompt"
+    "$template" >"$prompt"
 
   run_agent_once "$root" "$prompt" "${agent_args[@]}"
 
-  [[ -s "$commit_message_path" ]] \
-    || die "Commit message draft was not created: $commit_message_path"
+  [[ -s "$commit_message_path" ]] ||
+    die "Commit message draft was not created: $commit_message_path"
 
   printf '%s' "$commit_message_path"
 }
@@ -580,17 +591,32 @@ cmd_init() {
   # Parse the slug (first non-flag arg)
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --plan)     require_arg "$1" "$#" "${2-}"; plan_path="$2"; shift 2 ;;
-      --task)     require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; task_desc="$2"; shift 2 ;;
-      --context)  require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; other_context="$2"; shift 2 ;;
-      -*)         die "Unknown option: $1" ;;
-      *)
-        if [[ -z "$slug" ]]; then
-          slug="$1"; shift
-        else
-          die "Unexpected argument: $1"
-        fi
-        ;;
+    --plan)
+      require_arg "$1" "$#" "${2-}"
+      plan_path="$2"
+      shift 2
+      ;;
+    --task)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      task_desc="$2"
+      shift 2
+      ;;
+    --context)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      other_context="$2"
+      shift 2
+      ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      if [[ -z "$slug" ]]; then
+        slug="$1"
+        shift
+      else
+        die "Unexpected argument: $1"
+      fi
+      ;;
     esac
   done
 
@@ -613,12 +639,12 @@ cmd_init() {
 
   local plan_abs
   case "$plan_path" in
-    /*) plan_abs="$plan_path" ;;
-    *)  plan_abs="$caller_pwd/$plan_path" ;;
+  /*) plan_abs="$plan_path" ;;
+  *) plan_abs="$caller_pwd/$plan_path" ;;
   esac
 
-  [[ -f "$plan_abs" && -r "$plan_abs" ]] \
-    || die "Plan file not found or not readable: $plan_path"
+  [[ -f "$plan_abs" && -r "$plan_abs" ]] ||
+    die "Plan file not found or not readable: $plan_path"
 
   # Validate --context files before any branch/worktree creation
   if [[ "$other_context" != "None" ]]; then
@@ -627,11 +653,11 @@ cmd_init() {
       validate_ctx="$(printf '%s' "$validate_ctx" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
       local validate_abs
       case "$validate_ctx" in
-        /*) validate_abs="$validate_ctx" ;;
-        *)  validate_abs="$caller_pwd/$validate_ctx" ;;
+      /*) validate_abs="$validate_ctx" ;;
+      *) validate_abs="$caller_pwd/$validate_ctx" ;;
       esac
-      [[ -f "$validate_abs" && -r "$validate_abs" ]] \
-        || die "Context file not found or not readable: $validate_ctx"
+      [[ -f "$validate_abs" && -r "$validate_abs" ]] ||
+        die "Context file not found or not readable: $validate_ctx"
     done
   fi
 
@@ -692,7 +718,7 @@ cmd_init() {
   # Write .agl metadata (PLAN_PATH stored as relative for portability in metadata)
   local loop_dir_rel="${loop_dir#"$main_root"/}"
   local rel_plan_path="${abs_plan_path#"$main_root"/}"
-  cat > "$loop_dir/.agl" <<EOF
+  cat >"$loop_dir/.agl" <<EOF
 FEATURE_SLUG=$slug
 PLAN_PATH=$rel_plan_path
 DATE=$date
@@ -725,7 +751,7 @@ EOF
     -e "s|{{OTHER_CONTEXT}}|$(sed_escape "$abs_context_paths")|g" \
     -e "s|{{TASK_DESCRIPTION}}|$(sed_escape "$task_desc")|g" \
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$abs_output_dir")|g" \
-    "$template" > "$prompt"
+    "$template" >"$prompt"
 
   echo "Created loop: $loop_dir_rel"
   print_commands "$prompt" "" "$worktree_rel"
@@ -741,13 +767,39 @@ cmd_enhance() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dir)          require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
-      --context)      require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; other_context="$2"; shift 2 ;;
-      --commits)      require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; commit_hashes="$2"; shift 2 ;;
-      --instructions) require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; instructions="$2"; shift 2 ;;
-      --)             shift; agent_args+=("$@"); break ;;
-      -*)             die "Unknown option: $1" ;;
-      *)              agent_args+=("$@"); break ;;
+    --dir)
+      require_arg "$1" "$#" "${2-}"
+      loop_dir="$2"
+      shift 2
+      ;;
+    --context)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      other_context="$2"
+      shift 2
+      ;;
+    --commits)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      commit_hashes="$2"
+      shift 2
+      ;;
+    --instructions)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      instructions="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      agent_args+=("$@")
+      break
+      ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      agent_args+=("$@")
+      break
+      ;;
     esac
   done
 
@@ -803,7 +855,7 @@ cmd_enhance() {
     -e "s|{{COMMIT_HASHES}}|$(sed_escape "$commit_hashes")|g" \
     -e "s|{{ADDITIONAL_INSTRUCTIONS}}|$(sed_escape "$instructions")|g" \
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$abs_output_dir")|g" \
-    "$template" > "$prompt"
+    "$template" >"$prompt"
 
   update_last_stage "$agl_file" "enhancer"
 
@@ -824,14 +876,45 @@ cmd_review() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dir)       require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
-      --files)     require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; file_paths="$2"; shift 2 ;;
-      --context)   require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; other_context="$2"; shift 2 ;;
-      --commits)   require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; commit_hashes="$2"; shift 2 ;;
-      --checklist) require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; checklist="$2"; shift 2 ;;
-      --)          shift; agent_args+=("$@"); break ;;
-      -*)          die "Unknown option: $1" ;;
-      *)           agent_args+=("$@"); break ;;
+    --dir)
+      require_arg "$1" "$#" "${2-}"
+      loop_dir="$2"
+      shift 2
+      ;;
+    --files)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      file_paths="$2"
+      shift 2
+      ;;
+    --context)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      other_context="$2"
+      shift 2
+      ;;
+    --commits)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      commit_hashes="$2"
+      shift 2
+      ;;
+    --checklist)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      checklist="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      agent_args+=("$@")
+      break
+      ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      agent_args+=("$@")
+      break
+      ;;
     esac
   done
 
@@ -923,7 +1006,7 @@ cmd_review() {
     -e "s|{{COMMIT_HASHES}}|$(sed_escape "$commit_hashes")|g" \
     -e "s|{{REVIEW_CHECKLIST}}|$(sed_escape "$checklist")|g" \
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$abs_output_dir")|g" \
-    "$template" > "$prompt"
+    "$template" >"$prompt"
 
   # If round > 1, fix the output filename in the generated prompt
   if [[ "$round" -gt 1 ]]; then
@@ -964,11 +1047,27 @@ cmd_fix() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dir)     require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
-      --context) require_arg "$1" "$#" "${2-}"; reject_multiline "$1" "${2-}"; other_context="$2"; shift 2 ;;
-      --)        shift; agent_args+=("$@"); break ;;
-      -*)        die "Unknown option: $1" ;;
-      *)         agent_args+=("$@"); break ;;
+    --dir)
+      require_arg "$1" "$#" "${2-}"
+      loop_dir="$2"
+      shift 2
+      ;;
+    --context)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      other_context="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      agent_args+=("$@")
+      break
+      ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      agent_args+=("$@")
+      break
+      ;;
     esac
   done
 
@@ -1038,7 +1137,7 @@ cmd_fix() {
     -e "s|{{REVIEW_PATH}}|$(sed_escape "$review_path")|g" \
     -e "s|{{OTHER_CONTEXT}}|$(sed_escape "$abs_other_context")|g" \
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$abs_output_dir")|g" \
-    "$template" > "$prompt"
+    "$template" >"$prompt"
 
   # If round > 1, fix the output filename in the generated prompt
   if [[ "$round" -gt 1 ]]; then
@@ -1066,10 +1165,21 @@ cmd_work() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dir) require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
-      --)    shift; agent_args+=("$@"); break ;;
-      -*)    die "Unknown option: $1" ;;
-      *)     agent_args+=("$@"); break ;;
+    --dir)
+      require_arg "$1" "$#" "${2-}"
+      loop_dir="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      agent_args+=("$@")
+      break
+      ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      agent_args+=("$@")
+      break
+      ;;
     esac
   done
 
@@ -1115,8 +1225,12 @@ cmd_commit() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dir) require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
-      *)     die "Unknown option: $1" ;;
+    --dir)
+      require_arg "$1" "$#" "${2-}"
+      loop_dir="$2"
+      shift 2
+      ;;
+    *) die "Unknown option: $1" ;;
     esac
   done
 
@@ -1158,8 +1272,8 @@ cmd_commit() {
   [[ -d "$agl_main_root" ]] || die "Invalid .agl MAIN_ROOT: $agl_main_root"
   local agl_main_root_abs
   agl_main_root_abs="$(abs_path "$agl_main_root")"
-  [[ "$agl_main_root_abs" == "$repo_root_abs" ]] \
-    || die ".agl MAIN_ROOT does not match current repo root"
+  [[ "$agl_main_root_abs" == "$repo_root_abs" ]] ||
+    die ".agl MAIN_ROOT does not match current repo root"
 
   # Validate WORKTREE path safety
   local loop_dir_rel="${loop_dir#"$repo_root_abs"/}"
@@ -1172,15 +1286,15 @@ cmd_commit() {
   worktree_abs="$(abs_path "$worktree_abs_raw")"
 
   # Require worktree is within the repo's agent-loop directory
-  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] \
-    || die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] ||
+    die "Unsafe WORKTREE path (escapes work/agent-loop/)"
 
   # Verify target is a worktree of the current repo (git common-dir check)
   local repo_common repo_common_path repo_common_abs
   repo_common="$(git -C "$repo_root_abs" rev-parse --git-common-dir)"
   case "$repo_common" in
-    /*) repo_common_path="$repo_common" ;;
-    *)  repo_common_path="$repo_root_abs/$repo_common" ;;
+  /*) repo_common_path="$repo_common" ;;
+  *) repo_common_path="$repo_root_abs/$repo_common" ;;
   esac
   [[ -d "$repo_common_path" ]] || die "Invalid repo common git dir: $repo_common_path"
   repo_common_abs="$(abs_path "$repo_common_path")"
@@ -1188,30 +1302,30 @@ cmd_commit() {
   local wt_common wt_common_path wt_common_abs
   wt_common="$(git -C "$worktree_abs" rev-parse --git-common-dir)"
   case "$wt_common" in
-    /*) wt_common_path="$wt_common" ;;
-    *)  wt_common_path="$worktree_abs/$wt_common" ;;
+  /*) wt_common_path="$wt_common" ;;
+  *) wt_common_path="$worktree_abs/$wt_common" ;;
   esac
   [[ -d "$wt_common_path" ]] || die "Invalid worktree common git dir: $wt_common_path"
   wt_common_abs="$(abs_path "$wt_common_path")"
 
-  [[ "$wt_common_abs" == "$repo_common_abs" ]] \
-    || die "Worktree does not belong to current repo (git common-dir mismatch)"
+  [[ "$wt_common_abs" == "$repo_common_abs" ]] ||
+    die "Worktree does not belong to current repo (git common-dir mismatch)"
 
   if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
     die "Branch not found: $branch"
   fi
 
   local current_branch
-  current_branch="$(git -C "$worktree_abs" rev-parse --abbrev-ref HEAD)" \
-    || die "Invalid worktree: $worktree_abs"
+  current_branch="$(git -C "$worktree_abs" rev-parse --abbrev-ref HEAD)" ||
+    die "Invalid worktree: $worktree_abs"
   if [[ "$current_branch" != "$branch" ]]; then
     die "Worktree is on $current_branch (expected $branch)"
   fi
 
   # Check worktree is dirty
   local wt_status
-  wt_status="$(git -C "$worktree_abs" status --porcelain)" \
-    || die "Invalid worktree: $worktree_abs"
+  wt_status="$(git -C "$worktree_abs" status --porcelain)" ||
+    die "Invalid worktree: $worktree_abs"
   [[ -n "$wt_status" ]] || die "Nothing to commit (working tree clean)"
 
   # Build commit message
@@ -1236,7 +1350,7 @@ cmd_commit() {
   local existing_commits
   existing_commits="$(read_meta_optional "$agl_file" COMMITS)"
   if [[ -z "$existing_commits" ]]; then
-    echo "COMMITS=$new_hash" >> "$agl_file"
+    echo "COMMITS=$new_hash" >>"$agl_file"
   else
     sed_inplace "s|^COMMITS=.*|COMMITS=${existing_commits},${new_hash}|" "$agl_file"
   fi
@@ -1250,23 +1364,31 @@ cmd_merge() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dir)       require_arg "$1" "$#" "${2-}"; loop_dir="$2"; shift 2 ;;
-      --no-delete) no_delete=true; shift ;;
-      --agent)
-        require_arg "$1" "$#" "${2-}"
-        agent_args=("$2")
-        shift 2
-        agent_args+=("$@")
-        break
-        ;;
-      -*)          die "Unknown option: $1" ;;
-      *)
-        if [[ -z "$slug" ]]; then
-          slug="$1"; shift
-        else
-          die "Unexpected argument: $1"
-        fi
-        ;;
+    --dir)
+      require_arg "$1" "$#" "${2-}"
+      loop_dir="$2"
+      shift 2
+      ;;
+    --no-delete)
+      no_delete=true
+      shift
+      ;;
+    --agent)
+      require_arg "$1" "$#" "${2-}"
+      agent_args=("$2")
+      shift 2
+      agent_args+=("$@")
+      break
+      ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      if [[ -z "$slug" ]]; then
+        slug="$1"
+        shift
+      else
+        die "Unexpected argument: $1"
+      fi
+      ;;
     esac
   done
 
@@ -1329,8 +1451,8 @@ cmd_merge() {
   [[ -d "$agl_main_root" ]] || die "Invalid .agl MAIN_ROOT: $agl_main_root"
   local agl_main_root_abs
   agl_main_root_abs="$(abs_path "$agl_main_root")"
-  [[ "$agl_main_root_abs" == "$repo_root_abs" ]] \
-    || die ".agl MAIN_ROOT does not match current repo root"
+  [[ "$agl_main_root_abs" == "$repo_root_abs" ]] ||
+    die ".agl MAIN_ROOT does not match current repo root"
 
   # Validate WORKTREE path safety
   local loop_dir_rel="${loop_dir#"$repo_root_abs"/}"
@@ -1343,15 +1465,15 @@ cmd_merge() {
   worktree_abs="$(abs_path "$worktree_abs_raw")"
 
   # Require worktree is within the repo's agent-loop directory
-  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] \
-    || die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] ||
+    die "Unsafe WORKTREE path (escapes work/agent-loop/)"
 
   # Verify target is a worktree of the current repo (git common-dir check)
   local repo_common repo_common_path repo_common_abs
   repo_common="$(git -C "$repo_root_abs" rev-parse --git-common-dir)"
   case "$repo_common" in
-    /*) repo_common_path="$repo_common" ;;
-    *)  repo_common_path="$repo_root_abs/$repo_common" ;;
+  /*) repo_common_path="$repo_common" ;;
+  *) repo_common_path="$repo_root_abs/$repo_common" ;;
   esac
   [[ -d "$repo_common_path" ]] || die "Invalid repo common git dir: $repo_common_path"
   repo_common_abs="$(abs_path "$repo_common_path")"
@@ -1359,14 +1481,14 @@ cmd_merge() {
   local wt_common wt_common_path wt_common_abs
   wt_common="$(git -C "$worktree_abs" rev-parse --git-common-dir)"
   case "$wt_common" in
-    /*) wt_common_path="$wt_common" ;;
-    *)  wt_common_path="$worktree_abs/$wt_common" ;;
+  /*) wt_common_path="$wt_common" ;;
+  *) wt_common_path="$worktree_abs/$wt_common" ;;
   esac
   [[ -d "$wt_common_path" ]] || die "Invalid worktree common git dir: $wt_common_path"
   wt_common_abs="$(abs_path "$wt_common_path")"
 
-  [[ "$wt_common_abs" == "$repo_common_abs" ]] \
-    || die "Worktree does not belong to current repo (git common-dir mismatch)"
+  [[ "$wt_common_abs" == "$repo_common_abs" ]] ||
+    die "Worktree does not belong to current repo (git common-dir mismatch)"
 
   if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
     die "Branch not found: $branch"
@@ -1374,17 +1496,17 @@ cmd_merge() {
 
   # Preflight: worktree must be clean
   local wt_status
-  wt_status="$(git -C "$worktree_abs" status --porcelain)" \
-    || die "Invalid worktree: $worktree_abs"
-  [[ -z "$wt_status" ]] \
-    || die "Worktree has uncommitted changes. Run 'agl commit' or discard changes first."
+  wt_status="$(git -C "$worktree_abs" status --porcelain)" ||
+    die "Invalid worktree: $worktree_abs"
+  [[ -z "$wt_status" ]] ||
+    die "Worktree has uncommitted changes. Run 'agl commit' or discard changes first."
 
   # Preflight: primary worktree must be clean
   local primary_status
-  primary_status="$(git status --porcelain)" \
-    || die "Cannot check primary worktree status"
-  [[ -z "$primary_status" ]] \
-    || die "Primary worktree has uncommitted changes. Commit or stash them first."
+  primary_status="$(git status --porcelain)" ||
+    die "Cannot check primary worktree status"
+  [[ -z "$primary_status" ]] ||
+    die "Primary worktree has uncommitted changes. Commit or stash them first."
 
   # Squash merge
   if ! git merge --squash "$branch"; then
@@ -1427,6 +1549,130 @@ cmd_merge() {
   fi
 }
 
+cmd_drop() {
+  local slug="" loop_dir="" remove_all=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --dir)
+      require_arg "$1" "$#" "${2-}"
+      loop_dir="$2"
+      shift 2
+      ;;
+    --all)
+      remove_all=true
+      shift
+      ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      if [[ -z "$slug" ]]; then
+        slug="$1"
+        shift
+      else
+        die "Unexpected argument: $1"
+      fi
+      ;;
+    esac
+  done
+
+  require_primary_worktree "agl drop"
+
+  local repo_root
+  repo_root="$(project_root)"
+  [[ -d "$repo_root" ]] || die "Invalid repo root: $repo_root"
+  local repo_root_abs
+  repo_root_abs="$(abs_path "$repo_root")"
+
+  # Find loop dir
+  if [[ -n "$loop_dir" ]]; then
+    : # use provided --dir
+  elif [[ -n "$slug" ]]; then
+    local loop_base="$repo_root_abs/work/agent-loop"
+    local candidate_dir="" candidate_name=""
+    local cand
+    for cand in "$loop_base"/*-"${slug}"/; do
+      [[ -d "$cand" ]] || continue
+      [[ -f "$cand/.agl" ]] || continue
+      local cand_slug
+      cand_slug="$(grep "^FEATURE_SLUG=" "$cand/.agl" 2>/dev/null | head -1 | cut -d'=' -f2- || true)"
+      [[ "$cand_slug" == "$slug" ]] || continue
+      local cand_name
+      cand_name="$(basename "$cand")"
+      if [[ -z "$candidate_name" || "$cand_name" > "$candidate_name" ]]; then
+        candidate_name="$cand_name"
+        candidate_dir="${cand%/}"
+      fi
+    done
+    [[ -n "$candidate_dir" ]] || die "No loop directory found for slug '$slug'"
+    loop_dir="$candidate_dir"
+  else
+    loop_dir="$(find_loop_dir)"
+  fi
+  loop_dir="$(resolve_loop_dir "$loop_dir")"
+
+  local agl_file="$loop_dir/.agl"
+  [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
+
+  local branch worktree_val feature_slug
+  branch="$(read_meta_optional "$agl_file" BRANCH)"
+  worktree_val="$(read_meta_optional "$agl_file" WORKTREE)"
+  feature_slug="$(read_meta_optional "$agl_file" FEATURE_SLUG)"
+
+  if [[ -z "$branch" || -z "$worktree_val" || -z "$feature_slug" ]]; then
+    die "Not a worktree-mode loop (required keys missing)"
+  fi
+
+  local expected_branch="agl/$feature_slug"
+  if [[ "$branch" != "$expected_branch" ]]; then
+    die "Unexpected BRANCH in .agl: $branch (expected $expected_branch)"
+  fi
+
+  # Validate WORKTREE path safety
+  local loop_dir_rel="${loop_dir#"$repo_root_abs"/}"
+  require_safe_worktree_relpath "$worktree_val" "$loop_dir_rel"
+
+  local worktree_abs="$repo_root_abs/$worktree_val"
+
+  # Print what will be removed and ask for confirmation
+  echo "Will remove:"
+  echo "  Branch:   $branch"
+  if [[ -d "$worktree_abs" ]]; then
+    echo "  Worktree: $worktree_val"
+  fi
+  if [[ "$remove_all" == true ]]; then
+    echo "  Loop dir: $loop_dir_rel"
+  fi
+  printf 'Proceed? [y/N] '
+  local answer
+  read -r answer
+  case "$answer" in
+  [yY] | [yY][eE][sS]) ;;
+  *)
+    echo "Aborted."
+    exit 1
+    ;;
+  esac
+
+  # Remove worktree
+  if [[ -d "$worktree_abs" ]]; then
+    git worktree remove --force "$worktree_abs"
+  fi
+  git worktree prune 2>/dev/null || true
+
+  # Delete branch
+  if git rev-parse --verify "$branch" >/dev/null 2>&1; then
+    git branch -D "$branch"
+  fi
+
+  # Remove loop directory
+  if [[ "$remove_all" == true ]]; then
+    rm -rf "$loop_dir"
+    echo "Dropped $feature_slug (worktree, branch, and loop directory removed)"
+  else
+    echo "Dropped $feature_slug (worktree and branch removed; loop directory preserved)"
+  fi
+}
+
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
@@ -1436,13 +1682,14 @@ command="$1"
 shift
 
 case "$command" in
-  init)    cmd_init "$@" ;;
-  work)    cmd_work "$@" ;;
-  commit)  cmd_commit "$@" ;;
-  enhance) cmd_enhance "$@" ;;
-  review)  cmd_review "$@" ;;
-  fix)     cmd_fix "$@" ;;
-  merge)   cmd_merge "$@" ;;
-  -h|--help) usage 0 ;;
-  *)       die "Unknown command: $command. Run 'agl --help' for usage." ;;
+init) cmd_init "$@" ;;
+work) cmd_work "$@" ;;
+commit) cmd_commit "$@" ;;
+enhance) cmd_enhance "$@" ;;
+review) cmd_review "$@" ;;
+fix) cmd_fix "$@" ;;
+merge) cmd_merge "$@" ;;
+drop) cmd_drop "$@" ;;
+-h | --help) usage 0 ;;
+*) die "Unknown command: $command. Run 'agl --help' for usage." ;;
 esac

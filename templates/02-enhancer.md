@@ -24,6 +24,8 @@ You are the **enhancing agent**. Your job is to improve, strengthen, and refine 
 - Undo, redesign, or reimplement functionality
 - Add new features not in the original plan
 - Hunt for minor issues when there are none - "No required changes" is valid
+- Run code formatters (e.g. prettier, black, cargo fmt) unless explicitly allowed by `AGENTS.md`
+- Use handoff or report formats from other files — use ONLY the format in Section 4 of this brief
 
 **Surgical means:**
 - Fix bugs, edge cases, and correctness issues
@@ -84,7 +86,12 @@ After completing your changes and before writing the change summary, spawn an in
 1. Read the same plan and context listed in Section 2
 2. Review all files modified during the enhancement pass
 3. Check that changes are correct, surgical, and aligned with the plan
-4. Fix any issues it finds directly
+4. Fix any correctness issues it finds directly
+
+The sub-agent MUST NOT:
+- Write output files or change summaries — that is the parent agent's responsibility
+- Run code formatters or make stylistic changes (whitespace, wrapping, parentheses)
+- Restructure, refactor, or rewrite working code
 
 The sub-agent operates with fresh context and no knowledge of your enhancement reasoning. It works against the spec, not your interpretation of it. Any fixes it makes are final.
 

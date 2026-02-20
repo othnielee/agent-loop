@@ -22,6 +22,8 @@ You are the **implementing agent**. Your job is to produce working code or artif
 - Add features, refactoring, or "improvements" beyond what the plan specifies
 - Skip acceptance criteria or mark items complete when they are not
 - Make assumptions about ambiguous requirements - ask or flag them
+- Run code formatters (e.g. prettier, black, cargo fmt) unless explicitly allowed by `AGENTS.md`
+- Use handoff or report formats from other files — use ONLY the format in Section 4 of this brief
 
 **If you encounter a blocker or ambiguity:**
 1. Stop implementation
@@ -79,7 +81,12 @@ After completing the implementation and before writing the handoff report, spawn
 1. Read the same plan and context listed in Section 2
 2. Review all files created or modified during implementation
 3. Check the implementation against the plan's acceptance criteria
-4. Fix any issues, gaps, or deviations it finds directly
+4. Fix any correctness issues, gaps, or deviations it finds directly
+
+The sub-agent MUST NOT:
+- Write handoff reports or output files — that is the parent agent's responsibility
+- Run code formatters or make stylistic changes (whitespace, wrapping, parentheses)
+- Restructure, refactor, or rewrite working code
 
 The sub-agent operates with fresh context and no knowledge of your implementation reasoning. It works against the spec, not your interpretation of it. Any fixes it makes are final.
 

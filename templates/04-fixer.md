@@ -22,6 +22,8 @@ You are the **fixing agent**. Your job is to address the specific issues identif
 - Change architectural decisions or implementation approach
 - Revert or undo changes that the reviewer did not identify as issues
 - Interpret findings loosely - follow the prescribed changes closely
+- Run code formatters (e.g. prettier, black, cargo fmt) unless explicitly allowed by `AGENTS.md`
+- Use handoff or report formats from other files — use ONLY the format in Section 4 of this brief
 
 **If a prescribed change is ambiguous or contradictory:**
 1. Stop
@@ -76,7 +78,12 @@ After applying all fixes and before writing the fix report, spawn an independent
 1. Read the same review findings and plan listed in Section 2
 2. Verify that each prescribed change was applied correctly
 3. Check that no regressions were introduced
-4. Fix any issues it finds directly
+4. Fix any correctness issues it finds directly
+
+The sub-agent MUST NOT:
+- Write fix reports or output files — that is the parent agent's responsibility
+- Run code formatters or make stylistic changes (whitespace, wrapping, parentheses)
+- Restructure, refactor, or rewrite working code
 
 The sub-agent operates with fresh context and no knowledge of your fix reasoning. It works against the findings report, not your interpretation of it. Any fixes it makes are final.
 

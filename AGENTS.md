@@ -6,7 +6,7 @@
 
 The project has two concerns separated across two tools:
 
-**`agl` (this repo)** scaffolds and runs agent loops. All logic lives in a single script `bin/agl.sh` organized as a set of command functions (`cmd_init`, `cmd_enhance`, `cmd_review`, `cmd_fix`, `cmd_work`, `cmd_commit`, `cmd_merge`) dispatched from a `case` block at the bottom. Each command function creates or locates a timestamped loop directory under `work/agent-loop/`, fills `{{PLACEHOLDER}}` values in Markdown templates using `sed`, writes the result to the loop's `prompts/` directory, and either prints the ready-to-run command or invokes `agw` directly via `exec`.
+**`agl` (this repo)** scaffolds and runs agent loops. All logic lives in a single script `bin/agl.sh` organized as a set of command functions (`cmd_init`, `cmd_enhance`, `cmd_review`, `cmd_fix`, `cmd_work`, `cmd_commit`, `cmd_merge`, `cmd_drop`) dispatched from a `case` block at the bottom. Each command function creates or locates a timestamped loop directory under `work/agent-loop/`, fills `{{PLACEHOLDER}}` values in Markdown templates using `sed`, writes the result to the loop's `prompts/` directory, and either prints the ready-to-run command or invokes `agw` directly via `exec`.
 
 **`agw` (external, not in this repo)** runs agents with model selection, streaming output, and read-only mode enforcement. `agl` can invoke `agw` as a pass-through (`agl work`, `agl enhance claude`, etc.) or print the command for manual execution.
 

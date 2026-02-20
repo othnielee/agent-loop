@@ -34,9 +34,12 @@ agl commit
 
 # Squash-merge into the current branch
 agl merge add-auth --agent claude
+
+# Or abandon the work
+agl drop add-auth
 ```
 
-`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. `agl merge` opens the normal commit editor by default; pass `--agent` to draft a commit message and open `git commit -e -F` with that draft.
+`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. `agl merge` opens the normal commit editor by default; pass `--agent` to draft a commit message and open `git commit -e -F` with that draft. `agl drop` removes the worktree and branch without merging.
 
 ---
 
@@ -53,6 +56,7 @@ agl review [<agent>]                    Generate reviewer prompt (optionally run
 agl fix [<agent>]                       Generate fixer prompt (optionally run agent)
 agl merge [<slug>]                      Squash-merge with manual commit message
 agl merge [<slug>] --agent <agent> [...] Squash-merge with agent-drafted message
+agl drop [<slug>]                       Remove worktree and branch (abandon work)
 ```
 
 ### Init Options
@@ -114,6 +118,14 @@ agl merge [<slug>] --agent <agent> [...] Squash-merge with agent-drafted message
 | `--dir <path>` | Loop directory (default: most recent) |
 | `--no-delete` | Preserve worktree and branch after merge |
 
+### Drop Options
+
+| Option | Description |
+|--------|-------------|
+| `[<slug>]` | Feature slug to drop (default: most recent loop) |
+| `--dir <path>` | Loop directory (default: most recent) |
+| `--all` | Also remove the loop directory (prompts, output, context) |
+
 ### Worktree Workflow
 
 `agl init` creates a loop directory at `work/agent-loop/<timestamp>-<slug>/` in the primary tree with a git worktree at `<loop_dir>/worktree/` on a dedicated branch `agl/<slug>`. All agent work happens in this isolated checkout. The lifecycle is:
@@ -123,6 +135,7 @@ agl merge [<slug>] --agent <agent> [...] Squash-merge with agent-drafted message
 3. **`agl commit`** — stages all changes and commits with a mechanical message (e.g. `agl: add-auth worker`)
 4. **`agl enhance <agent>`**, **`agl review`**, **`agl fix <agent>`** — scaffold prompts and optionally run agents
 5. **`agl merge`** — squash-merges the worktree branch and opens the commit editor for a manual message; with `--agent`, it writes `context/squash-diff.patch`, runs a commit-writer prompt, and opens `git commit -e -F` with the draft before cleanup
+6. **`agl drop`** — removes the worktree and branch without merging (abandon work); with `--all`, also removes the loop directory
 
 This keeps agent changes isolated from unrelated work, makes intermediate commits mechanical, and produces a single squash commit with a meaningful message at the end.
 
@@ -141,7 +154,7 @@ The round counter increments each time `agl fix` is called.
 
 ### Context Snapshotting
 
-`agl init` copies the plan file and any `--context` files into a `context/` directory inside the loop. All prompts reference these local copies, making loop directories self-contained records of the work.
+`agl init`, `agl enhance`, `agl review`, and `agl fix` copy any `--context` files into a `context/` directory inside the loop. `agl init` also copies the plan file. All prompts reference these local copies, making loop directories self-contained records of the work.
 
 ```bash
 agl init add-auth --plan work/wip/task-1.md --context "docs/spec.md, docs/design.md"
@@ -267,7 +280,7 @@ BRANCH=agl/add-auth
 WORKTREE=work/agent-loop/2026-02-17-142533-add-auth/worktree
 MAIN_ROOT=/abs/path/to/project
 LAST_STAGE=worker
-COMMITS=a1b2c3,d4e5f6
+COMMITS=a1b2c3, d4e5f6
 ```
 
 ---

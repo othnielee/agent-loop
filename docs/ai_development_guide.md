@@ -41,6 +41,7 @@ All logic lives in a single script. Key commands map to functions:
 | `agl fix [<agent>]` | `cmd_fix` | Finds latest review output, generates fixer prompt, increments ROUND; optionally runs agent |
 | `agl merge [<slug>]` | `cmd_merge` | Squash-merges branch and opens manual commit editor |
 | `agl merge [<slug>] --agent <agent> [...]` | `cmd_merge` | Squash-merges branch, drafts commit message via agent, opens `git commit -e -F`, cleans up |
+| `agl drop [<slug>]` | `cmd_drop` | Removes worktree and branch without merging (abandon work); `--all` also removes loop directory |
 
 Helper functions: `find_loop_dir`, `read_meta`/`read_meta_optional`, `sed_escape`/`sed_inplace` (portable BSD/GNU), `slug_to_name`, `print_commands`, `run_agent`.
 

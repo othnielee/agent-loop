@@ -21,10 +21,10 @@ get_config() {
     echo ""
     return
   fi
-  sed -n "/^\[$section\]/,/^\[/p" "$CONFIG_FILE" \
-    | grep "^$key" | head -1 \
-    | cut -d'=' -f2- | tr -d ' "' | tr -d "'" \
-    | sed 's|^~/|'"$HOME"'/|' || true
+  sed -n "/^\[$section\]/,/^\[/p" "$CONFIG_FILE" |
+    grep "^$key" | head -1 |
+    cut -d'=' -f2- | tr -d ' "' | tr -d "'" |
+    sed 's|^~/|'"$HOME"'/|' || true
 }
 
 # ------------------------------------------------------------
@@ -35,9 +35,9 @@ GH_REPO_NAME="$(get_config github repo)"
 PAT="$(get_config github pat)"
 REF="$(get_config github ref)"
 
-[[ -z "$GH_USER" ]]     && GH_USER="othnielee"
+[[ -z "$GH_USER" ]] && GH_USER="othnielee"
 [[ -z "$GH_REPO_NAME" ]] && GH_REPO_NAME="agent-loop"
-[[ -z "$REF" ]]          && REF="main"
+[[ -z "$REF" ]] && REF="main"
 
 # Environment variable override
 [[ -n "${GH_PAT:-}" ]] && PAT="$GH_PAT"
@@ -59,15 +59,35 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --pat)
-      [[ $# -ge 2 && "$2" != -* ]] || { echo "Error: Missing value for --pat" >&2; exit 1; }
-      PAT="$2"; shift 2 ;;
-    --ref)
-      [[ $# -ge 2 && "$2" != -* ]] || { echo "Error: Missing value for --ref" >&2; exit 1; }
-      REF="$2"; shift 2 ;;
-    --keep-temp) KEEP_TEMP=1; shift ;;
-    -h|--help)   usage; exit 0 ;;
-    *)           echo "Unknown arg: $1" >&2; usage; exit 1 ;;
+  --pat)
+    [[ $# -ge 2 && "$2" != -* ]] || {
+      echo "Error: Missing value for --pat" >&2
+      exit 1
+    }
+    PAT="$2"
+    shift 2
+    ;;
+  --ref)
+    [[ $# -ge 2 && "$2" != -* ]] || {
+      echo "Error: Missing value for --ref" >&2
+      exit 1
+    }
+    REF="$2"
+    shift 2
+    ;;
+  --keep-temp)
+    KEEP_TEMP=1
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown arg: $1" >&2
+    usage
+    exit 1
+    ;;
   esac
 done
 
@@ -90,17 +110,17 @@ prepend_shebang_copy() {
       else { print sb; print; next }
     }
     { print }
-  ' "$src" > "$dest"
+  ' "$src" >"$dest"
   chmod 0755 "$dest"
 }
 
 rawurlencode() {
   local s="$1" i c
-  for ((i=0; i<${#s}; i++)); do
+  for ((i = 0; i < ${#s}; i++)); do
     c=${s:i:1}
     case "$c" in
-      [a-zA-Z0-9.~_-]) printf '%s' "$c" ;;
-      *) printf '%%%02X' "'$c" ;;
+    [a-zA-Z0-9.~_-]) printf '%s' "$c" ;;
+    *) printf '%%%02X' "'$c" ;;
     esac
   done
 }
@@ -108,10 +128,13 @@ rawurlencode() {
 # ------------------------------------------------------------
 # Clone, scrub remote, auto-clean
 # ------------------------------------------------------------
-have_cmd git || { echo "git is required." >&2; exit 1; }
+have_cmd git || {
+  echo "git is required." >&2
+  exit 1
+}
 
 WORKDIR="$(mktemp -d)"
-if (( ! KEEP_TEMP )); then
+if ((!KEEP_TEMP)); then
   trap 'rm -rf "$WORKDIR"' EXIT
 fi
 
@@ -122,7 +145,10 @@ ENC_PAT="$(rawurlencode "$PAT")"
 CLONE_URL="https://${GH_USER}:${ENC_PAT}@github.com/${GH_USER}/${GH_REPO_NAME}.git"
 
 echo "Cloning repo to temp dir..."
-( set +x; git clone --depth=1 --branch "$REF" "$CLONE_URL" "$SRC_DIR" ) >/dev/null
+(
+  set +x
+  git clone --depth=1 --branch "$REF" "$CLONE_URL" "$SRC_DIR"
+) >/dev/null
 
 # Scrub token from remote URL immediately
 git -C "$SRC_DIR" remote set-url origin "https://github.com/${GH_USER}/${GH_REPO_NAME}.git" >/dev/null
@@ -169,6 +195,6 @@ else
 fi
 
 echo "Done."
-if (( KEEP_TEMP )); then
+if ((KEEP_TEMP)); then
   echo "Temp dir kept at: $WORKDIR"
 fi

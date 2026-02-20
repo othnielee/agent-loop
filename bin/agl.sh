@@ -522,7 +522,7 @@ run_agent_once() {
 
   (
     cd "$run_dir_abs"
-    agw "$@" "$prompt_abs"
+    agw "$@" "$prompt_abs" >&2
   )
 }
 

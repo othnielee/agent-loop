@@ -37,7 +37,7 @@ All logic lives in a single script. Key commands map to functions:
 | `agl work <agent>` | `cmd_work` | Runs agent with the most recent prompt in the worktree |
 | `agl commit` | `cmd_commit` | Stages and commits all changes in the worktree |
 | `agl enhance [<agent>]` | `cmd_enhance` | Generates enhancer prompt; optionally runs agent |
-| `agl review [<agent>]` | `cmd_review` | Generates reviewer prompt (auto-injects `-r`); optionally runs agent |
+| `agl review [<agent>]` | `cmd_review` | Generates reviewer prompt; optionally runs agent |
 | `agl fix [<agent>]` | `cmd_fix` | Finds latest review output, generates fixer prompt, increments ROUND; optionally runs agent |
 | `agl merge [<slug>]` | `cmd_merge` | Squash-merges branch and opens manual commit editor |
 | `agl merge [<slug>] --agent <agent> [...]` | `cmd_merge` | Squash-merges branch, drafts commit message via agent, opens `git commit -e -F`, cleans up |

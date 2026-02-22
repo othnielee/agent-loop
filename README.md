@@ -99,7 +99,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 | `--context <paths>` | Additional context paths |
 | `--commits <hashes>` | Relevant commit hashes |
 | `--checklist <text>` | Review checklist |
-| `[<agent> [flags...]]` | Run agent after scaffolding (`-r` auto-injected) |
+| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agw) |
 
 ### Fix Options
 

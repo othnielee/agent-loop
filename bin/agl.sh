@@ -52,7 +52,7 @@ Review options:
   --context <paths>     Additional context paths (default: None)
   --commits <hashes>    Relevant commit hashes (default: None)
   --checklist <text>    Review checklist (default: None)
-  [<agent> [flags...]]  Run agent after scaffolding (-r auto-injected)
+  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agw)
 
 Fix options:
   --dir <path>          Loop directory (default: most recent)
@@ -423,8 +423,7 @@ read_meta_optional() {
 # When worktree_rel is provided, prints (cd ...) wrapped commands with absolute prompt path.
 print_commands() {
   local prompt_path="$1"
-  local readonly_flag="${2:-}"
-  local worktree_rel="${3:-}"
+  local worktree_rel="${2:-}"
   local root
   root="$(project_root)"
   root="$(abs_path "$root")"
@@ -446,26 +445,16 @@ print_commands() {
     echo "Prompt: $rel_path"
     echo ""
     echo "Run:"
-    if [[ "$readonly_flag" == "-r" ]]; then
-      echo "  (cd \"$worktree_abs\" && agw claude -r \"$prompt_abs\")"
-      echo "  (cd \"$worktree_abs\" && agw codex  -r \"$prompt_abs\")"
-    else
-      echo "  (cd \"$worktree_abs\" && agw claude \"$prompt_abs\")"
-      echo "  (cd \"$worktree_abs\" && agw codex  \"$prompt_abs\")"
-    fi
+    echo "  (cd \"$worktree_abs\" && agw claude \"$prompt_abs\")"
+    echo "  (cd \"$worktree_abs\" && agw codex  \"$prompt_abs\")"
     return 0
   fi
 
   echo "Prompt: $rel_path"
   echo ""
   echo "Run:"
-  if [[ "$readonly_flag" == "-r" ]]; then
-    echo "  agw claude -r $rel_path"
-    echo "  agw codex  -r $rel_path"
-  else
-    echo "  agw claude $rel_path"
-    echo "  agw codex  $rel_path"
-  fi
+  echo "  agw claude $rel_path"
+  echo "  agw codex  $rel_path"
 }
 
 # Execute agw in the worktree. Reads WORKTREE from .agl, resolves paths,
@@ -757,7 +746,7 @@ EOF
     "$template" >"$prompt"
 
   echo "Created loop: $loop_dir_rel"
-  print_commands "$prompt" "" "$worktree_rel"
+  print_commands "$prompt" "$worktree_rel"
 }
 
 cmd_enhance() {
@@ -865,7 +854,7 @@ cmd_enhance() {
   if [[ ${#agent_args[@]} -gt 0 ]]; then
     run_agent "$loop_dir" "$agl_file" "$prompt" "${agent_args[@]}"
   else
-    print_commands "$prompt" "" "$worktree_rel"
+    print_commands "$prompt" "$worktree_rel"
   fi
 }
 
@@ -1019,24 +1008,9 @@ cmd_review() {
   update_last_stage "$agl_file" "reviewer"
 
   if [[ ${#agent_args[@]} -gt 0 ]]; then
-    # Inject -r if not already present in agent args
-    local has_readonly=false
-    local arg
-    for arg in "${agent_args[@]}"; do
-      if [[ "$arg" == "-r" ]]; then
-        has_readonly=true
-        break
-      fi
-    done
-    if [[ "$has_readonly" == false ]]; then
-      # Insert -r after the agent name (first element)
-      local agent_name="${agent_args[0]}"
-      local rest=("${agent_args[@]:1}")
-      agent_args=("$agent_name" "-r" "${rest[@]}")
-    fi
     run_agent "$loop_dir" "$agl_file" "$prompt" "${agent_args[@]}"
   else
-    print_commands "$prompt" "-r" "$worktree_rel"
+    print_commands "$prompt" "$worktree_rel"
   fi
 }
 
@@ -1156,7 +1130,7 @@ cmd_fix() {
   if [[ ${#agent_args[@]} -gt 0 ]]; then
     run_agent "$loop_dir" "$agl_file" "$prompt" "${agent_args[@]}"
   else
-    print_commands "$prompt" "" "$worktree_rel"
+    print_commands "$prompt" "$worktree_rel"
   fi
 }
 
@@ -1200,23 +1174,6 @@ cmd_work() {
   local latest_prompt
   latest_prompt="$(find_latest_prompt_file "$prompts_dir")"
   [[ -n "$latest_prompt" ]] || die "No prompt found in $prompts_dir"
-
-  # Auto-inject -r for reviewer prompts if not already present
-  local prompt_basename
-  prompt_basename="$(basename "$latest_prompt")"
-  if [[ "$prompt_basename" == 03-reviewer* ]]; then
-    local has_readonly=false
-    local arg
-    for arg in "${agent_args[@]}"; do
-      if [[ "$arg" == "-r" ]]; then
-        has_readonly=true
-        break
-      fi
-    done
-    if [[ "$has_readonly" == false ]]; then
-      agent_args+=("-r")
-    fi
-  fi
 
   run_agent "$loop_dir" "$agl_file" "$latest_prompt" "${agent_args[@]}"
 }

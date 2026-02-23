@@ -66,6 +66,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 | `--plan <path>` | Path to the plan file (required) |
 | `--task <text>` | Task description (default: Implement the feature according to the plan.) |
 | `--context <paths>` | Additional context paths (default: None) |
+| `--worktree-base <path>` | Worktree base directory (overrides env/config) |
 
 ### Work Options
 
@@ -128,7 +129,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 
 ### Worktree Workflow
 
-`agl init` creates a loop directory at `work/agent-loop/<timestamp>-<slug>/` in the primary tree with a git worktree at `<loop_dir>/worktree/` on a dedicated branch `agl/<slug>`. All agent work happens in this isolated checkout. The lifecycle is:
+`agl init` creates a loop directory at `work/agent-loop/<timestamp>-<slug>/` in the primary tree with a git worktree on a dedicated branch `agl/<slug>`. The worktree is created outside the repository at `<base>/<framework>/<project>/<timestamp>-<slug>/worktree`, which prevents upward directory discovery from re-rooting into the primary checkout. The bootstrap process (`deploy.sh`) seeds `~/.config/solt/agent-loop/agl.toml` with a default worktree base, so worktrees work out of the box. The base can also be set via `--worktree-base` or `AGL_WORKTREE_BASE`. If no worktree base is configured at all (config removed, no env, no flag), `agl` falls back to an internal worktree at `<loop_dir>/worktree/`. The loop directory (prompts, output, context) always remains in-repo. The lifecycle is:
 
 1. **`agl init <slug>`** — creates loop directory, branch, worktree, and worker prompt
 2. **`agl work <agent>`** — runs the agent with the most recent prompt in the worktree
@@ -262,10 +263,20 @@ work/agent-loop/
     │   ├── COMMIT_MESSAGE-add-auth.txt
     │   ├── REVIEW-r2-add-auth.md
     │   └── FIX-r2-add-auth.md
-    └── worktree/              # git worktree (isolated checkout on agl/add-auth branch)
+    └── worktree/              # git worktree (only present in internal fallback mode)
 ```
 
-The `work/agent-loop/` directory must be in `.gitignore`.
+Normally, the worktree lives outside the repo under the configured base directory:
+
+```
+~/dev/worktrees/
+└── bash/
+    └── my-project/
+        └── 2026-02-17-142533-add-auth/
+            └── worktree/      # git worktree (default layout)
+```
+
+The `<framework>` level (e.g. `bash`) is derived from the repo's parent directory name. If the repo parent is an ancestor of the worktree base (e.g. repo at `~/dev/myproject` with base `~/dev/worktrees`), the framework falls back to `etc`. The `work/agent-loop/` directory must be in `.gitignore`.
 
 ### `.agl` Metadata
 
@@ -277,10 +288,18 @@ PLAN_PATH=work/agent-loop/2026-02-17-142533-add-auth/context/plan.md
 DATE=2026-02-17
 ROUND=1
 BRANCH=agl/add-auth
-WORKTREE=work/agent-loop/2026-02-17-142533-add-auth/worktree
+WORKTREE=/home/user/dev/worktrees/bash/project/2026-02-17-142533-add-auth/worktree
+WORKTREE_MODE=external
+WORKTREE_BASE=/home/user/dev/worktrees
 MAIN_ROOT=/abs/path/to/project
 LAST_STAGE=worker
 COMMITS=a1b2c3, d4e5f6
+```
+
+In internal fallback mode (no worktree base configured), `WORKTREE` is a relative path and the mode/base fields are absent:
+
+```
+WORKTREE=work/agent-loop/2026-02-17-142533-add-auth/worktree
 ```
 
 ---
@@ -319,6 +338,7 @@ This deploys:
 - `bin/agl-deploy.sh` -> `~/bin/agl-deploy`
 - `templates/*.md` -> `~/.config/solt/agent-loop/templates/`
 - Creates `~/.config/solt/agent-loop/deploy.toml` if it doesn't exist
+- Creates `~/.config/solt/agent-loop/agl.toml` if it doesn't exist (sets default worktree base)
 
 ### Updates
 

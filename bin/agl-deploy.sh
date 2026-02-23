@@ -194,6 +194,21 @@ else
   echo "No templates/ directory found in repository."
 fi
 
+# ------------------------------------------------------------
+# Create agl config if it doesn't exist
+# ------------------------------------------------------------
+AGL_CONFIG="$HOME/.config/solt/agent-loop/agl.toml"
+if [[ ! -f "$AGL_CONFIG" ]]; then
+  echo "Creating default config at $AGL_CONFIG"
+  ensure_dir "$(dirname "$AGL_CONFIG")"
+  cat > "$AGL_CONFIG" <<'TOML'
+# agl configuration
+
+[worktree]
+base = "~/dev/worktrees"
+TOML
+fi
+
 echo "Done."
 if ((KEEP_TEMP)); then
   echo "Temp dir kept at: $WORKDIR"

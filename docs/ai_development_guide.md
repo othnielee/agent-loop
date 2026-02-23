@@ -43,7 +43,7 @@ All logic lives in a single script. Key commands map to functions:
 | `agl merge [<slug>] --agent <agent> [...]` | `cmd_merge` | Squash-merges branch, drafts commit message via agent, opens `git commit -e -F`, cleans up |
 | `agl drop [<slug>]` | `cmd_drop` | Removes worktree and branch without merging (abandon work); `--all` also removes loop directory |
 
-Helper functions: `find_loop_dir`, `read_meta`/`read_meta_optional`, `sed_escape`/`sed_inplace` (portable BSD/GNU), `slug_to_name`, `print_commands`, `run_agent`.
+Helper functions: `find_loop_dir_with_worktree`/`find_loop_dir_any`, `resolve_worktree_abs`, `require_repo_membership`, `require_safe_worktree_path`, `read_config_worktree_base`, `read_meta`/`read_meta_optional`, `sed_escape`/`sed_inplace` (portable BSD/GNU), `slug_to_name`, `print_commands`, `run_agent`.
 
 ### Templates (`templates/`)
 
@@ -80,8 +80,17 @@ work/agent-loop/<timestamp>-<slug>/
 ├── context/          # snapshots of --plan and --context files
 ├── prompts/          # generated prompt files (01-worker.md, 03-reviewer-r2.md, etc.)
 ├── output/           # agent output (HANDOFF-*.md, REVIEW-*.md, etc.)
-└── worktree/         # git worktree (isolated checkout on agl/<slug> branch)
+└── worktree/         # git worktree (only present in internal fallback mode)
 ```
+
+The worktree is created outside the repo by default, under the base directory configured in `~/.config/solt/agent-loop/agl.toml` (seeded by `deploy.sh`). This prevents upward directory discovery from re-rooting into the primary checkout. The loop directory stays in-repo; only the worktree moves:
+
+```
+<worktree-base>/<framework>/<project-name>/<timestamp>-<slug>/
+└── worktree/         # git worktree (default layout)
+```
+
+The `<framework>` level is derived from the repo's parent directory name (e.g. `bash` for a repo under `~/dev/bash/`). If the repo parent is an ancestor of the worktree base, it falls back to `etc`. A single `base = "~/dev/worktrees"` in `agl.toml` works globally across frameworks. The base can also be set via `--worktree-base` or `AGL_WORKTREE_BASE`. If no base is configured at all, `agl` falls back to an internal worktree at `<loop_dir>/worktree/`.
 
 ### Deployment
 

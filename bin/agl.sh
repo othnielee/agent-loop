@@ -31,6 +31,7 @@ Init options:
   --plan <path>         Path to the plan file (required)
   --task <description>  Task description (default: Implement the feature according to the plan.)
   --context <paths>     Additional context paths (default: None)
+  --worktree-base <path> Worktree base directory (overrides config/env)
 
 Work options:
   --dir <path>          Loop directory (default: most recent)
@@ -197,35 +198,109 @@ update_last_stage() {
   fi
 }
 
-# Validate a WORKTREE value from .agl before use in git -C or git worktree remove.
-# Requires exact equality: WORKTREE must equal <loop_dir_rel>/worktree.
-require_safe_worktree_relpath() {
-  local worktree_val="$1" loop_dir_rel="$2"
+# Best-effort cleanup for partially initialized loops in cmd_init.
+cleanup_init_artifacts() {
+  local worktree_mode="$1" main_root="$2" loop_dir="$3" branch_name="$4" worktree_abs="$5"
+  local external_wt_dir="${6:-}"
 
-  # Defense-in-depth: must be relative (no leading /)
-  if [[ "$worktree_val" == /* ]]; then
-    die "Unsafe WORKTREE path (absolute): $worktree_val"
+  if [[ -n "$worktree_abs" && -d "$worktree_abs" ]]; then
+    git worktree remove --force "$worktree_abs" 2>/dev/null || true
+  fi
+  git worktree prune 2>/dev/null || true
+
+  if [[ "$worktree_mode" == "external" ]]; then
+    if [[ -n "$external_wt_dir" &&
+      "$worktree_abs" == "$external_wt_dir/worktree" &&
+      -d "$external_wt_dir" ]]; then
+      rm -rf "$external_wt_dir"
+    fi
+  elif [[ -n "$worktree_abs" &&
+    "$worktree_abs" == "$main_root/work/agent-loop/"* &&
+    -d "$worktree_abs" ]]; then
+    rm -rf "$worktree_abs"
   fi
 
-  # Defense-in-depth: must not contain ..
-  if [[ "$worktree_val" == *..* ]]; then
-    die "Unsafe WORKTREE path (contains ..): $worktree_val"
+  if [[ -n "$branch_name" ]]; then
+    git branch -D "$branch_name" 2>/dev/null || true
   fi
 
-  # Defense-in-depth: must start with expected prefix
-  if [[ "$worktree_val" != work/agent-loop/* ]]; then
-    die "Unsafe WORKTREE path (wrong prefix): $worktree_val"
-  fi
-
-  # Exact equality: must match this loop dir's worktree path
-  local expected="${loop_dir_rel}/worktree"
-  if [[ "$worktree_val" != "$expected" ]]; then
-    die "WORKTREE '$worktree_val' does not match expected '$expected'"
+  if [[ -n "$loop_dir" && -d "$loop_dir" ]]; then
+    rm -rf "$loop_dir"
   fi
 }
 
-# Find the most recent loop directory with a .agl file in the primary tree.
-find_loop_dir() {
+# Validate a WORKTREE value from .agl before use in git -C or git worktree remove.
+# Supports both external (absolute, default) and internal (relative, fallback) modes.
+# Reads WORKTREE_MODE and WORKTREE_BASE from agl_file only — never from CLI,
+# environment, or config file.
+require_safe_worktree_path() {
+  local agl_file="$1" worktree_val="$2" loop_dir_rel="$3" main_root_abs="$4"
+
+  local worktree_mode
+  worktree_mode="$(read_meta_optional "$agl_file" WORKTREE_MODE)"
+
+  if [[ "$worktree_val" == /* ]]; then
+    # Absolute path: must be external mode
+    if [[ "$worktree_mode" != "external" ]]; then
+      die "Absolute WORKTREE requires WORKTREE_MODE=external and WORKTREE_BASE"
+    fi
+
+    local worktree_base_val
+    worktree_base_val="$(read_meta_optional "$agl_file" WORKTREE_BASE)"
+    [[ -n "$worktree_base_val" ]] ||
+      die "Absolute WORKTREE requires WORKTREE_MODE=external and WORKTREE_BASE"
+
+    # Must be under WORKTREE_BASE (trailing / prevents prefix collision)
+    [[ "$worktree_val" == "$worktree_base_val/"* ]] ||
+      die "WORKTREE is not under WORKTREE_BASE"
+
+    # Must end with /worktree
+    [[ "$worktree_val" == */worktree ]] ||
+      die "WORKTREE must end with /worktree"
+
+    # Exact equality to the derived canonical path
+    local framework_name
+    framework_name="$(derive_framework_name "$main_root_abs" "$worktree_base_val")"
+    local expected
+    expected="$worktree_base_val/$framework_name/$(basename "$main_root_abs")/$(basename "$loop_dir_rel")/worktree"
+    [[ "$worktree_val" == "$expected" ]] ||
+      die "WORKTREE '$worktree_val' does not match expected '$expected'"
+
+    # Symlink-safe comparison when both directories exist
+    if [[ -d "$worktree_val" && -d "$worktree_base_val" ]]; then
+      local wt_norm base_norm
+      wt_norm="$(abs_path "$worktree_val")"
+      base_norm="$(abs_path "$worktree_base_val")"
+      [[ "$wt_norm" == "$base_norm/"* ]] ||
+        die "WORKTREE escapes WORKTREE_BASE (symlink detected)"
+    fi
+  else
+    # Relative path
+    if [[ "$worktree_mode" == "external" ]]; then
+      die "WORKTREE_MODE=external requires absolute WORKTREE"
+    fi
+
+    # Defense-in-depth: must not contain ..
+    if [[ "$worktree_val" == *..* ]]; then
+      die "Unsafe WORKTREE path (contains ..): $worktree_val"
+    fi
+
+    # Defense-in-depth: must start with expected prefix
+    if [[ "$worktree_val" != work/agent-loop/* ]]; then
+      die "Unsafe WORKTREE path (wrong prefix): $worktree_val"
+    fi
+
+    # Exact equality: must match this loop dir's worktree path
+    local expected="${loop_dir_rel}/worktree"
+    if [[ "$worktree_val" != "$expected" ]]; then
+      die "WORKTREE '$worktree_val' does not match expected '$expected'"
+    fi
+  fi
+}
+
+# Find the most recent loop directory whose worktree directory exists.
+# Used by commands that need a live worktree (work, commit, enhance, review, fix).
+find_loop_dir_with_worktree() {
   local root
   root="$(project_root)"
   local loop_base="$root/work/agent-loop"
@@ -239,7 +314,50 @@ find_loop_dir() {
         grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
         local wt_val
         wt_val="$(grep "^WORKTREE=" "$d/.agl" 2>/dev/null | head -1 | cut -d'=' -f2-)"
-        [[ -d "$root/$wt_val" ]] || continue
+        if [[ "$wt_val" == /* ]]; then
+          # Absolute: require external mode metadata
+          grep -q "^WORKTREE_MODE=external$" "$d/.agl" 2>/dev/null || continue
+          grep -q "^WORKTREE_BASE=" "$d/.agl" 2>/dev/null || continue
+          [[ -d "$wt_val" ]] || continue
+        else
+          [[ -d "$root/$wt_val" ]] || continue
+        fi
+        echo "$d"
+        break
+      fi
+    done)"
+
+    if [[ -n "$latest" ]]; then
+      echo "${latest%/}"
+      return 0
+    fi
+  fi
+
+  die "No loop directory with .agl metadata found"
+}
+
+# Find the most recent loop directory with valid .agl metadata, regardless of
+# whether the worktree directory exists. Used by merge and drop which must be
+# able to find loops whose worktree has already been removed.
+find_loop_dir_any() {
+  local root
+  root="$(project_root)"
+  local loop_base="$root/work/agent-loop"
+
+  if [[ -d "$loop_base" ]]; then
+    local latest
+    latest="$(find "$loop_base" -mindepth 1 -maxdepth 1 -type d | sort -r | while read -r d; do
+      if [[ -f "$d/.agl" ]] &&
+        grep -q "^BRANCH=" "$d/.agl" 2>/dev/null &&
+        grep -q "^WORKTREE=" "$d/.agl" 2>/dev/null &&
+        grep -q "^MAIN_ROOT=" "$d/.agl" 2>/dev/null; then
+        local wt_val
+        wt_val="$(grep "^WORKTREE=" "$d/.agl" 2>/dev/null | head -1 | cut -d'=' -f2-)"
+        # If absolute, require external mode fields
+        if [[ "$wt_val" == /* ]]; then
+          grep -q "^WORKTREE_MODE=external$" "$d/.agl" 2>/dev/null || continue
+          grep -q "^WORKTREE_BASE=" "$d/.agl" 2>/dev/null || continue
+        fi
         echo "$d"
         break
       fi
@@ -261,7 +379,7 @@ resolve_loop_dir() {
   local resolved_loop_dir
 
   if [[ -z "$loop_dir_input" ]]; then
-    resolved_loop_dir="$(find_loop_dir)"
+    resolved_loop_dir="$(find_loop_dir_with_worktree)"
   else
     case "$loop_dir_input" in
     /*) resolved_loop_dir="$loop_dir_input" ;;
@@ -460,11 +578,125 @@ read_meta_optional() {
   grep "^${key}=" "$agl_file" 2>/dev/null | head -1 | cut -d'=' -f2- || true
 }
 
+# Read worktree.base from ~/.config/solt/agent-loop/agl.toml.
+# Prints the value (with quotes stripped) and returns 0, or prints nothing and
+# returns 0 when the config file or key is absent.
+read_config_worktree_base() {
+  local config_file="$HOME/.config/solt/agent-loop/agl.toml"
+  [[ -f "$config_file" ]] || return 0
+
+  local in_worktree_section=false
+  local line
+  while IFS= read -r line; do
+    # Skip blank lines and comments
+    [[ -z "$line" || "$line" == "#"* ]] && continue
+
+    # Section headers
+    if [[ "$line" == "["*"]" ]]; then
+      if [[ "$line" == "[worktree]" ]]; then
+        in_worktree_section=true
+      else
+        in_worktree_section=false
+      fi
+      continue
+    fi
+
+    if [[ "$in_worktree_section" == true ]]; then
+      # Only parse lines with an = sign
+      [[ "$line" == *=* ]] || continue
+      local cfg_key="${line%%=*}"
+      cfg_key="$(printf '%s' "$cfg_key" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      [[ "$cfg_key" == "base" ]] || continue
+
+      local value_part="${line#*=}"
+      value_part="$(printf '%s' "$value_part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+      # Must be exactly "..." (quoted, nothing else on line)
+      if [[ ! "$value_part" =~ ^\"[^\"]*\"$ ]]; then
+        die "Invalid worktree.base in $config_file: value must be quoted (\"...\")"
+      fi
+
+      # Strip quotes
+      local cfg_value="${value_part:1:${#value_part}-2}"
+
+      # Reject spaces/tabs in value
+      if [[ "$cfg_value" == *" "* || "$cfg_value" == *$'\t'* ]]; then
+        die "Invalid worktree.base in $config_file: value must not contain spaces or tabs"
+      fi
+
+      printf '%s' "$cfg_value"
+      return 0
+    fi
+  done < "$config_file"
+}
+
+# Derive a framework name from the repo's parent directory.
+# If the repo parent is an ancestor of (or equal to) the worktree base,
+# the parent is a generic container (e.g. ~/dev) — return "etc".
+# Otherwise return the parent directory name (e.g. "bash", "python").
+derive_framework_name() {
+  local main_root_norm="$1" worktree_base_abs="$2"
+  local repo_parent_norm
+  repo_parent_norm="$(dirname "$main_root_norm")"
+  if [[ "$worktree_base_abs" == "$repo_parent_norm/"* || "$worktree_base_abs" == "$repo_parent_norm" ]]; then
+    printf '%s' "etc"
+  else
+    printf '%s' "$(basename "$repo_parent_norm")"
+  fi
+}
+
+# Resolve the WORKTREE value from .agl to an absolute path.
+# Returns the absolute path directly when WORKTREE starts with /,
+# otherwise joins MAIN_ROOT with the relative WORKTREE value.
+# Does not call abs_path — the directory may not exist.
+resolve_worktree_abs() {
+  local agl_file="$1"
+  local worktree_val
+  worktree_val="$(read_meta "$agl_file" WORKTREE)"
+
+  if [[ "$worktree_val" == /* ]]; then
+    printf '%s' "$worktree_val"
+    return 0
+  fi
+
+  local main_root_val
+  main_root_val="$(read_meta "$agl_file" MAIN_ROOT)"
+  printf '%s' "$main_root_val/$worktree_val"
+}
+
+# Verify the worktree belongs to the current repo by comparing git common-dir.
+# Both paths must be absolute and the worktree directory must exist.
+require_repo_membership() {
+  local worktree_abs="$1" main_root_abs="$2"
+
+  local repo_common repo_common_path repo_common_abs
+  repo_common="$(git -C "$main_root_abs" rev-parse --git-common-dir)"
+  case "$repo_common" in
+  /*) repo_common_path="$repo_common" ;;
+  *) repo_common_path="$main_root_abs/$repo_common" ;;
+  esac
+  [[ -d "$repo_common_path" ]] || die "Invalid repo common git dir: $repo_common_path"
+  repo_common_abs="$(abs_path "$repo_common_path")"
+
+  local wt_common wt_common_path wt_common_abs
+  wt_common="$(git -C "$worktree_abs" rev-parse --git-common-dir)"
+  case "$wt_common" in
+  /*) wt_common_path="$wt_common" ;;
+  *) wt_common_path="$worktree_abs/$wt_common" ;;
+  esac
+  [[ -d "$wt_common_path" ]] || die "Invalid worktree common git dir: $wt_common_path"
+  wt_common_abs="$(abs_path "$wt_common_path")"
+
+  [[ "$wt_common_abs" == "$repo_common_abs" ]] ||
+    die "Worktree does not belong to current repo (git common-dir mismatch)"
+}
+
 # Print the prompt path and ready-to-run agw commands.
-# When worktree_rel is provided, prints (cd ...) wrapped commands with absolute prompt path.
+# When worktree_path is provided, prints (cd ...) wrapped commands with absolute
+# prompt path. worktree_path is absolute (default) or relative (internal fallback).
 print_commands() {
   local prompt_path="$1"
-  local worktree_rel="${2:-}"
+  local worktree_path="${2:-}"
   local root
   root="$(project_root)"
   root="$(abs_path "$root")"
@@ -481,8 +713,13 @@ print_commands() {
   fi
 
   echo ""
-  if [[ -n "$worktree_rel" ]]; then
-    local worktree_abs="$root/$worktree_rel"
+  if [[ -n "$worktree_path" ]]; then
+    local worktree_abs
+    if [[ "$worktree_path" == /* ]]; then
+      worktree_abs="$worktree_path"
+    else
+      worktree_abs="$root/$worktree_path"
+    fi
     echo "Prompt: $rel_path"
     echo ""
     echo "Run:"
@@ -519,16 +756,25 @@ run_agent() {
   esac
   [[ -f "$prompt_abs" ]] || die "Prompt file not found: $prompt_abs"
 
-  local worktree_rel
-  worktree_rel="$(read_meta "$agl_file" WORKTREE)"
-  require_safe_worktree_relpath "$worktree_rel" "$loop_dir_rel"
+  local worktree_val
+  worktree_val="$(read_meta "$agl_file" WORKTREE)"
+  require_safe_worktree_path "$agl_file" "$worktree_val" "$loop_dir_rel" "$root"
 
-  local worktree_abs_raw="$root/$worktree_rel"
+  local worktree_abs_raw
+  worktree_abs_raw="$(resolve_worktree_abs "$agl_file")"
   [[ -d "$worktree_abs_raw" ]] || die "Worktree directory not found: $worktree_abs_raw"
   local worktree_abs
   worktree_abs="$(abs_path "$worktree_abs_raw")"
-  [[ "$worktree_abs" == "$root/work/agent-loop/"* ]] ||
-    die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+
+  # For internal fallback worktrees, verify under work/agent-loop/
+  local worktree_mode
+  worktree_mode="$(read_meta_optional "$agl_file" WORKTREE_MODE)"
+  if [[ "$worktree_mode" != "external" ]]; then
+    [[ "$worktree_abs" == "$root/work/agent-loop/"* ]] ||
+      die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  fi
+
+  require_repo_membership "$worktree_abs" "$root"
 
   cd "$worktree_abs"
   exec agw "$@" "$prompt_abs"
@@ -619,7 +865,7 @@ create_commit_draft() {
 # ------------------------------------------------------------
 
 cmd_init() {
-  local slug="" plan_path="" task_desc="" other_context="None"
+  local slug="" plan_path="" task_desc="" other_context="None" worktree_base_input=""
 
   # Parse the slug (first non-flag arg)
   while [[ $# -gt 0 ]]; do
@@ -639,6 +885,11 @@ cmd_init() {
       require_arg "$1" "$#" "${2-}"
       reject_multiline "$1" "${2-}"
       other_context="$2"
+      shift 2
+      ;;
+    --worktree-base)
+      require_arg "$1" "$#" "${2-}"
+      worktree_base_input="$2"
       shift 2
       ;;
     -*) die "Unknown option: $1" ;;
@@ -712,21 +963,86 @@ cmd_init() {
 
   mkdir -p "$prompts_dir" "$output_dir" "$context_dir"
 
-  # --- Create branch and worktree inside the loop dir ---
-  local worktree_rel="work/agent-loop/${timestamp}-${slug}/worktree"
-  local worktree_abs="$main_root/$worktree_rel"
+  # --- Resolve worktree base (CLI > env > config > unset) ---
+  local project_name
+  project_name="$(basename "$(abs_path "$main_root")")"
 
-  git branch "$branch_name" HEAD
+  local worktree_base=""
+  if [[ -n "$worktree_base_input" ]]; then
+    worktree_base="$worktree_base_input"
+  elif [[ -n "${AGL_WORKTREE_BASE:-}" ]]; then
+    worktree_base="$AGL_WORKTREE_BASE"
+  else
+    worktree_base="$(read_config_worktree_base)"
+  fi
 
-  if ! git worktree add "$worktree_abs" "$branch_name"; then
-    git worktree remove --force "$worktree_abs" 2>/dev/null || true
-    git worktree prune 2>/dev/null || true
-    if [[ -d "$worktree_abs" && "$worktree_abs" == "$main_root/work/agent-loop/"* ]]; then
-      rm -rf "$worktree_abs"
+  # --- Resolve worktree paths and mode ---
+  local worktree_agl_val="" worktree_abs_for_git="" external_wt_dir=""
+  local worktree_mode_val="internal" worktree_base_abs=""
+
+  if [[ -n "$worktree_base" ]]; then
+    # External worktree mode (default — base seeded by deploy.sh)
+
+    # Expand ~/
+    # shellcheck disable=SC2088  # intentional literal ~/
+    if [[ "${worktree_base:0:2}" == '~/' ]]; then
+      worktree_base="$HOME/${worktree_base:2}"
     fi
-    git branch -D "$branch_name" 2>/dev/null || true
+
+    # Must be absolute after expansion
+    if [[ "$worktree_base" != /* ]]; then
+      rm -rf "$loop_dir"
+      die "worktree base must be absolute (after ~ expansion): $worktree_base"
+    fi
+
+    # Create base dir and normalize
+    if ! mkdir -p "$worktree_base"; then
+      rm -rf "$loop_dir"
+      die "Failed to create worktree base directory: $worktree_base"
+    fi
+    worktree_base_abs="$(abs_path "$worktree_base")"
+
+    # Reject if under MAIN_ROOT
+    local main_root_norm
+    main_root_norm="$(abs_path "$main_root")"
+    if [[ "$worktree_base_abs" == "$main_root_norm" || "$worktree_base_abs" == "$main_root_norm/"* ]]; then
+      rm -rf "$loop_dir"
+      die "worktree base must be outside the repository"
+    fi
+
+    local framework_name
+    framework_name="$(derive_framework_name "$main_root_norm" "$worktree_base_abs")"
+    external_wt_dir="$worktree_base_abs/$framework_name/$project_name/${timestamp}-${slug}"
+    worktree_abs_for_git="$external_wt_dir/worktree"
+    worktree_agl_val="$worktree_abs_for_git"
+    worktree_mode_val="external"
+  else
+    # Internal worktree fallback (no base configured)
+    local worktree_rel="work/agent-loop/${timestamp}-${slug}/worktree"
+    worktree_abs_for_git="$main_root/$worktree_rel"
+    worktree_agl_val="$worktree_rel"
+  fi
+
+  if ! git branch "$branch_name" HEAD; then
     rm -rf "$loop_dir"
-    die "Failed to create worktree at $worktree_rel"
+    die "Failed to create branch: $branch_name"
+  fi
+
+  if [[ "$worktree_mode_val" == "external" ]]; then
+    if ! mkdir -p "$external_wt_dir"; then
+      cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
+      die "Failed to create external worktree directory: $external_wt_dir"
+    fi
+
+    if ! git worktree add "$worktree_abs_for_git" "$branch_name"; then
+      cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
+      die "Failed to create worktree at $worktree_abs_for_git"
+    fi
+  else
+    if ! git worktree add "$worktree_abs_for_git" "$branch_name"; then
+      cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git"
+      die "Failed to create worktree at $worktree_agl_val"
+    fi
   fi
 
   # Absolute paths for placeholders (D4: agent CWD is in the worktree)
@@ -741,26 +1057,48 @@ cmd_init() {
   else
     plan_dest="plan"
   fi
-  cp "$plan_abs" "$context_dir/$plan_dest"
+  if ! cp "$plan_abs" "$context_dir/$plan_dest"; then
+    cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
+    die "Failed to snapshot plan file into loop context"
+  fi
   local abs_plan_path="$abs_context_dir/$plan_dest"
 
   # Snapshot --context files into context/ (resolved from invocation directory)
   local abs_context_paths
-  abs_context_paths="$(snapshot_context_files "$other_context" "$caller_pwd" "$context_dir")"
+  if ! abs_context_paths="$(snapshot_context_files "$other_context" "$caller_pwd" "$context_dir")"; then
+    cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
+    die "Failed to snapshot context files into loop context"
+  fi
 
   # Write .agl metadata (PLAN_PATH stored as relative for portability in metadata)
   local loop_dir_rel="${loop_dir#"$main_root"/}"
   local rel_plan_path="${abs_plan_path#"$main_root"/}"
-  cat >"$loop_dir/.agl" <<EOF
+  if ! cat >"$loop_dir/.agl" <<EOF
 FEATURE_SLUG=$slug
 PLAN_PATH=$rel_plan_path
 DATE=$date
 ROUND=1
 BRANCH=$branch_name
-WORKTREE=$worktree_rel
+WORKTREE=$worktree_agl_val
 MAIN_ROOT=$main_root
 LAST_STAGE=worker
 EOF
+  then
+    cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
+    die "Failed to write loop metadata: $loop_dir/.agl"
+  fi
+
+  # Append worktree mode metadata (present for external, absent for internal fallback)
+  if [[ "$worktree_mode_val" == "external" ]]; then
+    if ! cat >>"$loop_dir/.agl" <<EOF
+WORKTREE_MODE=external
+WORKTREE_BASE=$worktree_base_abs
+EOF
+    then
+      cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
+      die "Failed to write external worktree metadata: $loop_dir/.agl"
+    fi
+  fi
 
   local feature_name
   feature_name="$(slug_to_name "$slug")"
@@ -787,7 +1125,7 @@ EOF
     "$template" >"$prompt"
 
   echo "Created loop: $loop_dir_rel"
-  print_commands "$prompt" "$worktree_rel"
+  print_commands "$prompt" "$worktree_agl_val"
 }
 
 cmd_enhance() {
@@ -1440,39 +1778,25 @@ cmd_commit() {
 
   # Validate WORKTREE path safety
   local loop_dir_rel="${loop_dir#"$repo_root_abs"/}"
-  require_safe_worktree_relpath "$worktree_val" "$loop_dir_rel"
+  require_safe_worktree_path "$agl_file" "$worktree_val" "$loop_dir_rel" "$repo_root_abs"
 
   # Compute and normalize worktree absolute path
-  local worktree_abs_raw="$agl_main_root_abs/$worktree_val"
+  local worktree_abs_raw
+  worktree_abs_raw="$(resolve_worktree_abs "$agl_file")"
   [[ -d "$worktree_abs_raw" ]] || die "Worktree directory not found: $worktree_abs_raw"
   local worktree_abs
   worktree_abs="$(abs_path "$worktree_abs_raw")"
 
-  # Require worktree is within the repo's agent-loop directory
-  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] ||
-    die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  # For internal fallback worktrees, require within the repo's agent-loop directory
+  local worktree_mode
+  worktree_mode="$(read_meta_optional "$agl_file" WORKTREE_MODE)"
+  if [[ "$worktree_mode" != "external" ]]; then
+    [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] ||
+      die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  fi
 
-  # Verify target is a worktree of the current repo (git common-dir check)
-  local repo_common repo_common_path repo_common_abs
-  repo_common="$(git -C "$repo_root_abs" rev-parse --git-common-dir)"
-  case "$repo_common" in
-  /*) repo_common_path="$repo_common" ;;
-  *) repo_common_path="$repo_root_abs/$repo_common" ;;
-  esac
-  [[ -d "$repo_common_path" ]] || die "Invalid repo common git dir: $repo_common_path"
-  repo_common_abs="$(abs_path "$repo_common_path")"
-
-  local wt_common wt_common_path wt_common_abs
-  wt_common="$(git -C "$worktree_abs" rev-parse --git-common-dir)"
-  case "$wt_common" in
-  /*) wt_common_path="$wt_common" ;;
-  *) wt_common_path="$worktree_abs/$wt_common" ;;
-  esac
-  [[ -d "$wt_common_path" ]] || die "Invalid worktree common git dir: $wt_common_path"
-  wt_common_abs="$(abs_path "$wt_common_path")"
-
-  [[ "$wt_common_abs" == "$repo_common_abs" ]] ||
-    die "Worktree does not belong to current repo (git common-dir mismatch)"
+  # Verify target is a worktree of the current repo
+  require_repo_membership "$worktree_abs" "$repo_root_abs"
 
   if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
     die "Branch not found: $branch"
@@ -1601,7 +1925,7 @@ cmd_merge() {
     [[ -n "$candidate_dir" ]] || die "No loop directory found for slug '$slug'"
     loop_dir="$candidate_dir"
   else
-    loop_dir="$(find_loop_dir)"
+    loop_dir="$(find_loop_dir_any)"
   fi
   loop_dir="$(resolve_loop_dir "$loop_dir")"
 
@@ -1633,39 +1957,25 @@ cmd_merge() {
 
   # Validate WORKTREE path safety
   local loop_dir_rel="${loop_dir#"$repo_root_abs"/}"
-  require_safe_worktree_relpath "$worktree_val" "$loop_dir_rel"
+  require_safe_worktree_path "$agl_file" "$worktree_val" "$loop_dir_rel" "$repo_root_abs"
 
   # Compute and normalize worktree absolute path
-  local worktree_abs_raw="$agl_main_root_abs/$worktree_val"
+  local worktree_abs_raw
+  worktree_abs_raw="$(resolve_worktree_abs "$agl_file")"
   [[ -d "$worktree_abs_raw" ]] || die "Worktree directory not found: $worktree_abs_raw"
   local worktree_abs
   worktree_abs="$(abs_path "$worktree_abs_raw")"
 
-  # Require worktree is within the repo's agent-loop directory
-  [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] ||
-    die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  # For internal fallback worktrees, require within the repo's agent-loop directory
+  local worktree_mode
+  worktree_mode="$(read_meta_optional "$agl_file" WORKTREE_MODE)"
+  if [[ "$worktree_mode" != "external" ]]; then
+    [[ "$worktree_abs" == "$repo_root_abs/work/agent-loop/"* ]] ||
+      die "Unsafe WORKTREE path (escapes work/agent-loop/)"
+  fi
 
-  # Verify target is a worktree of the current repo (git common-dir check)
-  local repo_common repo_common_path repo_common_abs
-  repo_common="$(git -C "$repo_root_abs" rev-parse --git-common-dir)"
-  case "$repo_common" in
-  /*) repo_common_path="$repo_common" ;;
-  *) repo_common_path="$repo_root_abs/$repo_common" ;;
-  esac
-  [[ -d "$repo_common_path" ]] || die "Invalid repo common git dir: $repo_common_path"
-  repo_common_abs="$(abs_path "$repo_common_path")"
-
-  local wt_common wt_common_path wt_common_abs
-  wt_common="$(git -C "$worktree_abs" rev-parse --git-common-dir)"
-  case "$wt_common" in
-  /*) wt_common_path="$wt_common" ;;
-  *) wt_common_path="$worktree_abs/$wt_common" ;;
-  esac
-  [[ -d "$wt_common_path" ]] || die "Invalid worktree common git dir: $wt_common_path"
-  wt_common_abs="$(abs_path "$wt_common_path")"
-
-  [[ "$wt_common_abs" == "$repo_common_abs" ]] ||
-    die "Worktree does not belong to current repo (git common-dir mismatch)"
+  # Verify target is a worktree of the current repo
+  require_repo_membership "$worktree_abs" "$repo_root_abs"
 
   if ! git rev-parse --verify "$branch" >/dev/null 2>&1; then
     die "Branch not found: $branch"
@@ -1722,6 +2032,22 @@ cmd_merge() {
       die "Unexpected BRANCH in .agl: $branch (expected $expected_branch)"
     fi
     git branch -D "$branch"
+
+    # For external worktrees, remove the timestamp-slug leaf directory
+    if [[ "$worktree_mode" == "external" ]]; then
+      local external_wt_dir
+      external_wt_dir="$(dirname "$worktree_abs")"
+      local worktree_base_val
+      worktree_base_val="$(read_meta_optional "$agl_file" WORKTREE_BASE)"
+      local framework_name
+      framework_name="$(derive_framework_name "$repo_root_abs" "$worktree_base_val")"
+      local expected_parent
+      expected_parent="$worktree_base_val/$framework_name/$(basename "$repo_root_abs")"
+      if [[ -n "$worktree_base_val" && "$external_wt_dir" == "$expected_parent/"* && -d "$external_wt_dir" ]]; then
+        rm -rf "$external_wt_dir"
+      fi
+    fi
+
     echo "Merged and cleaned up $branch"
   fi
 }
@@ -1783,7 +2109,7 @@ cmd_drop() {
     [[ -n "$candidate_dir" ]] || die "No loop directory found for slug '$slug'"
     loop_dir="$candidate_dir"
   else
-    loop_dir="$(find_loop_dir)"
+    loop_dir="$(find_loop_dir_any)"
   fi
   loop_dir="$(resolve_loop_dir "$loop_dir")"
 
@@ -1814,9 +2140,10 @@ cmd_drop() {
 
   # Validate WORKTREE path safety
   local loop_dir_rel="${loop_dir#"$repo_root_abs"/}"
-  require_safe_worktree_relpath "$worktree_val" "$loop_dir_rel"
+  require_safe_worktree_path "$agl_file" "$worktree_val" "$loop_dir_rel" "$repo_root_abs"
 
-  local worktree_abs="$repo_root_abs/$worktree_val"
+  local worktree_abs
+  worktree_abs="$(resolve_worktree_abs "$agl_file")"
 
   # Print what will be removed and ask for confirmation
   echo "Will remove:"
@@ -1840,9 +2167,27 @@ cmd_drop() {
 
   # Remove worktree
   if [[ -d "$worktree_abs" ]]; then
+    require_repo_membership "$worktree_abs" "$repo_root_abs"
     git worktree remove --force "$worktree_abs"
   fi
   git worktree prune 2>/dev/null || true
+
+  # For external worktrees, remove the timestamp-slug leaf directory
+  local worktree_mode
+  worktree_mode="$(read_meta_optional "$agl_file" WORKTREE_MODE)"
+  if [[ "$worktree_mode" == "external" ]]; then
+    local external_wt_dir
+    external_wt_dir="$(dirname "$worktree_abs")"
+    local worktree_base_val
+    worktree_base_val="$(read_meta_optional "$agl_file" WORKTREE_BASE)"
+    local framework_name
+    framework_name="$(derive_framework_name "$repo_root_abs" "$worktree_base_val")"
+    local expected_parent
+    expected_parent="$worktree_base_val/$framework_name/$(basename "$repo_root_abs")"
+    if [[ -n "$worktree_base_val" && "$external_wt_dir" == "$expected_parent/"* && -d "$external_wt_dir" ]]; then
+      rm -rf "$external_wt_dir"
+    fi
+  fi
 
   # Delete branch
   if git rev-parse --verify "$branch" >/dev/null 2>&1; then

@@ -90,6 +90,21 @@ TOML
   echo "  - Set your PAT in $CONFIG_FILE for agl-deploy updates"
 fi
 
+# ------------------------------------------------------------
+# Create agl config if it doesn't exist
+# ------------------------------------------------------------
+AGL_CONFIG="$HOME/.config/solt/agent-loop/agl.toml"
+if [[ ! -f "$AGL_CONFIG" ]]; then
+  echo "Creating default config at $AGL_CONFIG"
+  ensure_dir "$(dirname "$AGL_CONFIG")"
+  cat > "$AGL_CONFIG" <<'TOML'
+# agl configuration
+
+[worktree]
+base = "~/dev/worktrees"
+TOML
+fi
+
 echo "Done."
 echo ""
 echo "Commands available:"

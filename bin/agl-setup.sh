@@ -52,7 +52,7 @@ read_config_toml_string() {
       fi
       return 0
     fi
-  done < "$CONFIG_FILE"
+  done <"$CONFIG_FILE"
 }
 
 # ------------------------------------------------------------
@@ -71,16 +71,18 @@ REF="$(read_config_toml_string github ref)"
 [[ -n "${GH_PAT:-}" ]] && PAT="$GH_PAT"
 
 KEEP_TEMP=0
+SKIP_CONFIG=0
 
 usage() {
   cat <<EOF
-Usage: $0 [--pat TOKEN] [--ref REF] [--keep-temp]
+Usage: $0 [--pat TOKEN] [--ref REF] [--no-config] [--keep-temp]
 
 Config file: $CONFIG_FILE
 
 Options:
   --pat         Override PAT from config (or set in config file)
   --ref         Branch/tag to clone (default: main)
+  --no-config   Skip creating config file if it doesn't exist
   --keep-temp   Keep temp dir for debugging
 EOF
 }
@@ -103,6 +105,10 @@ while [[ $# -gt 0 ]]; do
     REF="$2"
     shift 2
     ;;
+  --no-config)
+    SKIP_CONFIG=1
+    shift
+    ;;
   --keep-temp)
     KEEP_TEMP=1
     shift
@@ -119,8 +125,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ------------------------------------------------------------
+# Create agl config if it doesn't exist
+# ------------------------------------------------------------
+if [[ "$SKIP_CONFIG" -eq 0 && ! -f "$CONFIG_FILE" ]]; then
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  cat >"$CONFIG_FILE" <<'TOML'
+# agl configuration
+
+[worktree]
+base = "~/dev/worktrees"
+
+[github]
+user = "othnielee"
+repo = "agent-loop"
+pat = ""
+ref = "main"
+TOML
+  echo "Created config at $CONFIG_FILE" >&2
+fi
+
 if [[ -z "${PAT:-}" ]]; then
-  echo "Error: PAT is required. Set it in $CONFIG_FILE or use --pat." >&2
+  echo "No PAT provided. Add one to $CONFIG_FILE for automatic use, or pass --pat TOKEN." >&2
   exit 1
 fi
 
@@ -220,27 +246,6 @@ if [[ -d "$TPL_SRC" ]]; then
   shopt -u nullglob
 else
   echo "No templates/ directory found in repository."
-fi
-
-# ------------------------------------------------------------
-# Create agl config if it doesn't exist
-# ------------------------------------------------------------
-AGL_CONFIG="$HOME/.config/solt/agent-loop/agl.toml"
-if [[ ! -f "$AGL_CONFIG" ]]; then
-  echo "Creating default config at $AGL_CONFIG"
-  ensure_dir "$(dirname "$AGL_CONFIG")"
-  cat > "$AGL_CONFIG" <<'TOML'
-# agl configuration
-
-[worktree]
-base = "~/dev/worktrees"
-
-[github]
-user = "othnielee"
-repo = "agent-loop"
-pat = ""
-ref = "main"
-TOML
 fi
 
 echo "Done."

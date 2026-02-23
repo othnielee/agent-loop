@@ -481,7 +481,7 @@ file_mtime_epoch() {
 }
 
 # Build a deterministic key for prompt filename tie-breaks when mtimes match.
-# Treat base prompts as pass 1 so 01-worker-3.md outranks 01-worker.md.
+# Treat base prompts as pass 1 so 01-worker-r3.md outranks 01-worker.md.
 prompt_tiebreak_key() {
   local prompt_file="$1"
   local base_name
@@ -1612,18 +1612,14 @@ cmd_work() {
     local context_dir="$loop_dir/context"
     mkdir -p "$prompts_dir" "$output_dir" "$context_dir"
 
-    # Compute prompt filename: scan for existing 01-worker*.md files
+    # Compute prompt filename: scan for existing 01-worker-r*.md files
+    # The unsuffixed 01-worker.md (from init) is index 0; worker passes start at r1.
     local max_index=0
     local prompt_file
     while IFS= read -r prompt_file; do
       local basename_file
       basename_file="$(basename "$prompt_file")"
-      if [[ "$basename_file" == "01-worker.md" ]]; then
-        # Index 1
-        if [[ 1 -gt "$max_index" ]]; then
-          max_index=1
-        fi
-      elif [[ "$basename_file" =~ ^01-worker-([0-9]+)\.md$ ]]; then
+      if [[ "$basename_file" =~ ^01-worker-r([0-9]+)\.md$ ]]; then
         local idx_raw idx_num
         idx_raw="${BASH_REMATCH[1]}"
         idx_num=$((10#$idx_raw))
@@ -1631,15 +1627,10 @@ cmd_work() {
           max_index="$idx_num"
         fi
       fi
-    done < <(find "$prompts_dir" -mindepth 1 -maxdepth 1 -type f -name '01-worker*.md' 2>/dev/null)
+    done < <(find "$prompts_dir" -mindepth 1 -maxdepth 1 -type f -name '01-worker-r*.md' 2>/dev/null)
 
     local next_index=$((max_index + 1))
-    local prompt_name
-    if [[ "$next_index" -eq 1 ]]; then
-      prompt_name="01-worker.md"
-    else
-      prompt_name="01-worker-${next_index}.md"
-    fi
+    local prompt_name="01-worker-r${next_index}.md"
 
     # Snapshot the plan file into context/
     local abs_plan_path
@@ -1823,16 +1814,13 @@ cmd_commit() {
       msg="agl: $slug fixer-r${fix_round}"
     fi
   elif [[ "$last_stage" == "worker" ]]; then
-    local worker_pass worker_pass_num
+    local worker_pass
     worker_pass="$(read_meta_optional "$agl_file" WORKER_PASS)"
     if [[ -n "$worker_pass" && ! "$worker_pass" =~ ^[0-9]+$ ]]; then
       die "Invalid WORKER_PASS in .agl: $worker_pass"
     fi
     if [[ -n "$worker_pass" ]]; then
-      worker_pass_num=$((10#$worker_pass))
-    fi
-    if [[ -n "$worker_pass" && "$worker_pass_num" -gt 1 ]]; then
-      msg="agl: $slug worker-${worker_pass_num}"
+      msg="agl: $slug worker-r$((10#$worker_pass))"
     else
       msg="agl: $slug worker"
     fi

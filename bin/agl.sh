@@ -1350,6 +1350,33 @@ cmd_review() {
   fi
   [[ -z "$handoff_paths" ]] && handoff_paths="None"
 
+  # Collect previous review reports for re-reviews
+  if [[ "$round" -gt 1 ]]; then
+    local prev_reviews=""
+    local ri review_file
+    for ((ri = 1; ri < round; ri++)); do
+      if [[ "$ri" -eq 1 ]]; then
+        review_file="$abs_output_dir/REVIEW-${slug}.md"
+      else
+        review_file="$abs_output_dir/REVIEW-r${ri}-${slug}.md"
+      fi
+      if [[ -f "$review_file" ]]; then
+        if [[ -n "$prev_reviews" ]]; then
+          prev_reviews="$prev_reviews, $review_file"
+        else
+          prev_reviews="$review_file"
+        fi
+      fi
+    done
+    if [[ -n "$prev_reviews" ]]; then
+      if [[ "$abs_other_context" == "None" ]]; then
+        abs_other_context="$prev_reviews"
+      else
+        abs_other_context="$abs_other_context, $prev_reviews"
+      fi
+    fi
+  fi
+
   local template="$TEMPLATE_DIR/03-reviewer.md"
   [[ -f "$template" ]] || die "Template not found: $template"
 
@@ -1379,7 +1406,8 @@ cmd_review() {
 
   # If round > 1, fix the output filename in the generated prompt
   if [[ "$round" -gt 1 ]]; then
-    sed_inplace "s|REVIEW-$(sed_escape "${slug}").md|$(sed_escape "$review_output")|g" "$prompt"
+    # Only rewrite the output instruction line; do not rewrite paths in Other Context.
+    sed_inplace "/^Write your findings report to / s|REVIEW-$(sed_escape "$slug")\\.md|$(sed_escape "$review_output")|g" "$prompt"
   fi
 
   update_last_stage "$agl_file" "reviewer"
@@ -1495,7 +1523,7 @@ cmd_fix() {
 
   # If round > 1, fix the output filename in the generated prompt
   if [[ "$round" -gt 1 ]]; then
-    sed_inplace "s|FIX-$(sed_escape "${slug}").md|$(sed_escape "$fix_output")|g" "$prompt"
+    sed_inplace "/produce a fix report at/ s|FIX-$(sed_escape "${slug}")\\.md|$(sed_escape "$fix_output")|g" "$prompt"
   fi
 
   # Increment round for next review-fix cycle

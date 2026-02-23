@@ -19,7 +19,7 @@ Usage: agl <command> [options]
 
 Commands:
   init <feature-slug>   Create a new agent loop (worktree + branch)
-  work <agent>          Run agent with the most recent prompt
+  work [options] [<agent>]  Run agent with the most recent prompt
   commit                Stage and commit changes in the worktree
   enhance [<agent>]     Generate enhancer prompt (optionally run agent)
   review [<agent>]      Generate reviewer prompt (optionally run agent)
@@ -34,7 +34,11 @@ Init options:
 
 Work options:
   --dir <path>          Loop directory (default: most recent)
-  <agent> [flags...]    Agent name and flags (passed through to agw)
+  --plan <path>         Scaffold a new worker prompt with this plan
+  --task <description>  Task description (default: Implement the plan.)
+  --context <paths>     Additional context paths (default: None)
+  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agw)
+                        Agent is required when --plan is not used.
 
 Commit options:
   --dir <path>          Loop directory (default: most recent)
@@ -74,6 +78,8 @@ Drop options:
 
 Examples:
   agl init add-auth --plan work/wip/task-1.md
+  agl work --plan work/planning/subplan-01.md claude  # scaffold + run subplan
+  agl work --plan work/planning/subplan-01.md         # scaffold only (print commands)
   agl work claude                          # run agent with most recent prompt
   agl commit
   agl enhance claude                       # scaffold + run
@@ -356,25 +362,60 @@ file_mtime_epoch() {
   die "Unable to read file mtime: $file_path"
 }
 
+# Build a deterministic key for prompt filename tie-breaks when mtimes match.
+# Treat base prompts as pass 1 so 01-worker-3.md outranks 01-worker.md.
+prompt_tiebreak_key() {
+  local prompt_file="$1"
+  local base_name
+  base_name="$(basename "$prompt_file")"
+  local numeric_suffix
+
+  if [[ "$base_name" =~ ^(.+)-r([0-9]+)\.md$ ]]; then
+    numeric_suffix=$((10#${BASH_REMATCH[2]}))
+    printf '%s-r%09d.md' "${BASH_REMATCH[1]}" "$numeric_suffix"
+    return 0
+  fi
+
+  if [[ "$base_name" =~ ^(.+)-([0-9]+)\.md$ ]]; then
+    numeric_suffix=$((10#${BASH_REMATCH[2]}))
+    printf '%s-%09d.md' "${BASH_REMATCH[1]}" "$numeric_suffix"
+    return 0
+  fi
+
+  if [[ "$base_name" =~ ^(.+)\.md$ ]]; then
+    printf '%s-%09d.md' "${BASH_REMATCH[1]}" 1
+    return 0
+  fi
+
+  printf '%s' "$base_name"
+}
+
 # Find the most recently modified prompt file in a prompt directory.
 find_latest_prompt_file() {
   local prompts_dir="$1"
   local latest_prompt=""
   local latest_mtime="-1"
+  local latest_key=""
   local prompt_file
 
   while IFS= read -r prompt_file; do
     local prompt_mtime
     prompt_mtime="$(file_mtime_epoch "$prompt_file")"
+    local prompt_key
+    prompt_key="$(prompt_tiebreak_key "$prompt_file")"
 
     if [[ -z "$latest_prompt" || "$prompt_mtime" -gt "$latest_mtime" ]]; then
       latest_prompt="$prompt_file"
       latest_mtime="$prompt_mtime"
+      latest_key="$prompt_key"
       continue
     fi
 
-    if [[ "$prompt_mtime" -eq "$latest_mtime" && "$prompt_file" > "$latest_prompt" ]]; then
-      latest_prompt="$prompt_file"
+    if [[ "$prompt_mtime" -eq "$latest_mtime" ]]; then
+      if [[ "$prompt_key" > "$latest_key" || ("$prompt_key" == "$latest_key" && "$prompt_file" > "$latest_prompt") ]]; then
+        latest_prompt="$prompt_file"
+        latest_key="$prompt_key"
+      fi
     fi
   done < <(find "$prompts_dir" -mindepth 1 -maxdepth 1 -type f -name '*.md' | sort)
 
@@ -1137,7 +1178,10 @@ cmd_fix() {
 cmd_work() {
   require_primary_worktree "agl work"
 
-  local loop_dir=""
+  local loop_dir="" plan_path="" task_desc="" other_context="None"
+  local plan_flag_provided=false task_flag_provided=false context_flag_provided=false
+  local caller_pwd
+  caller_pwd="$(pwd -P)"
   local agent_args=()
 
   while [[ $# -gt 0 ]]; do
@@ -1145,6 +1189,26 @@ cmd_work() {
     --dir)
       require_arg "$1" "$#" "${2-}"
       loop_dir="$2"
+      shift 2
+      ;;
+    --plan)
+      require_arg "$1" "$#" "${2-}"
+      plan_flag_provided=true
+      plan_path="$2"
+      shift 2
+      ;;
+    --task)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      task_flag_provided=true
+      task_desc="$2"
+      shift 2
+      ;;
+    --context)
+      require_arg "$1" "$#" "${2-}"
+      reject_multiline "$1" "${2-}"
+      context_flag_provided=true
+      other_context="$2"
       shift 2
       ;;
     --)
@@ -1160,22 +1224,161 @@ cmd_work() {
     esac
   done
 
-  [[ ${#agent_args[@]} -gt 0 ]] || die "Agent name is required. Usage: agl work <agent> [flags...]"
+  # --task and --context require --plan
+  if [[ "$plan_flag_provided" == false ]]; then
+    if [[ "$task_flag_provided" == true ]]; then
+      die "--task requires --plan"
+    fi
+    if [[ "$context_flag_provided" == true ]]; then
+      die "--context requires --plan"
+    fi
+  fi
+
+  # Validate agent name when provided: first token must not start with -
+  if [[ ${#agent_args[@]} -gt 0 && "${agent_args[0]}" == -* ]]; then
+    die "Agent name is required before flags"
+  fi
 
   loop_dir="$(resolve_loop_dir "$loop_dir")"
 
   local agl_file="$loop_dir/.agl"
   [[ -f "$agl_file" ]] || die "No .agl metadata found in $loop_dir"
 
-  # Find the most recent prompt file
-  local prompts_dir="$loop_dir/prompts"
-  [[ -d "$prompts_dir" ]] || die "No prompts directory found in $loop_dir"
+  if [[ "$plan_flag_provided" == true ]]; then
+    # --- Scaffolding branch (--plan provided) ---
 
-  local latest_prompt
-  latest_prompt="$(find_latest_prompt_file "$prompts_dir")"
-  [[ -n "$latest_prompt" ]] || die "No prompt found in $prompts_dir"
+    # Resolve and validate the plan file
+    local plan_abs
+    case "$plan_path" in
+    /*) plan_abs="$plan_path" ;;
+    *) plan_abs="$caller_pwd/$plan_path" ;;
+    esac
+    [[ -f "$plan_abs" && -r "$plan_abs" ]] ||
+      die "Plan file not found or not readable: $plan_path"
 
-  run_agent "$loop_dir" "$agl_file" "$latest_prompt" "${agent_args[@]}"
+    # Read .agl metadata
+    local slug date omnibus_plan_rel
+    slug="$(read_meta "$agl_file" FEATURE_SLUG)"
+    date="$(read_meta "$agl_file" DATE)"
+    omnibus_plan_rel="$(read_meta "$agl_file" PLAN_PATH)"
+    local worktree_rel
+    worktree_rel="$(read_meta "$agl_file" WORKTREE)"
+
+    local root
+    root="$(project_root)"
+    root="$(abs_path "$root")"
+
+    local feature_name
+    feature_name="$(slug_to_name "$slug")"
+
+    local prompts_dir="$loop_dir/prompts"
+    local output_dir="$loop_dir/output"
+    local context_dir="$loop_dir/context"
+    mkdir -p "$prompts_dir" "$output_dir" "$context_dir"
+
+    # Compute prompt filename: scan for existing 01-worker*.md files
+    local max_index=0
+    local prompt_file
+    while IFS= read -r prompt_file; do
+      local basename_file
+      basename_file="$(basename "$prompt_file")"
+      if [[ "$basename_file" == "01-worker.md" ]]; then
+        # Index 1
+        if [[ 1 -gt "$max_index" ]]; then
+          max_index=1
+        fi
+      elif [[ "$basename_file" =~ ^01-worker-([0-9]+)\.md$ ]]; then
+        local idx_raw idx_num
+        idx_raw="${BASH_REMATCH[1]}"
+        idx_num=$((10#$idx_raw))
+        if [[ "$idx_num" -gt "$max_index" ]]; then
+          max_index="$idx_num"
+        fi
+      fi
+    done < <(find "$prompts_dir" -mindepth 1 -maxdepth 1 -type f -name '01-worker*.md' 2>/dev/null)
+
+    local next_index=$((max_index + 1))
+    local prompt_name
+    if [[ "$next_index" -eq 1 ]]; then
+      prompt_name="01-worker.md"
+    else
+      prompt_name="01-worker-${next_index}.md"
+    fi
+
+    # Snapshot the plan file into context/
+    local abs_plan_path
+    abs_plan_path="$(snapshot_context_files "$plan_abs" "$caller_pwd" "$context_dir")"
+
+    # Snapshot --context files if provided
+    local abs_context_paths
+    abs_context_paths="$(snapshot_context_files "$other_context" "$caller_pwd" "$context_dir")"
+
+    # Build {{OTHER_CONTEXT}}: always include the omnibus plan path
+    local omnibus_abs="$root/$omnibus_plan_rel"
+    local other_context_val="$omnibus_abs"
+    if [[ "$abs_context_paths" != "None" ]]; then
+      other_context_val="$other_context_val, $abs_context_paths"
+    fi
+
+    # Check if handoff exists
+    local template handoff_paths
+    if [[ -f "$output_dir/HANDOFF-${slug}.md" ]]; then
+      template="$TEMPLATE_DIR/01-worker-next.md"
+      handoff_paths="$output_dir/HANDOFF-${slug}.md"
+    else
+      template="$TEMPLATE_DIR/01-worker.md"
+      handoff_paths="None"
+    fi
+    [[ -f "$template" ]] || die "Template not found: $template"
+
+    # Default task description
+    if [[ -z "$task_desc" ]]; then
+      task_desc="Implement the plan."
+    fi
+
+    # Scaffold prompt via sed substitution
+    local prompt="$prompts_dir/$prompt_name"
+    sed \
+      -e "s|{{DATE}}|$(sed_escape "$date")|g" \
+      -e "s|{{FEATURE_SLUG}}|$(sed_escape "$slug")|g" \
+      -e "s|{{FEATURE_NAME}}|$(sed_escape "$feature_name")|g" \
+      -e "s|{{PLAN_PATH}}|$(sed_escape "$abs_plan_path")|g" \
+      -e "s|{{HANDOFF_PATHS}}|$(sed_escape "$handoff_paths")|g" \
+      -e "s|{{OTHER_CONTEXT}}|$(sed_escape "$other_context_val")|g" \
+      -e "s|{{TASK_DESCRIPTION}}|$(sed_escape "$task_desc")|g" \
+      -e "s|{{OUTPUT_DIR}}|$(sed_escape "$output_dir")|g" \
+      "$template" >"$prompt"
+
+    # Store worker pass index in .agl
+    local existing_pass
+    existing_pass="$(read_meta_optional "$agl_file" WORKER_PASS)"
+    if [[ -n "$existing_pass" ]]; then
+      sed_inplace "s|^WORKER_PASS=.*|WORKER_PASS=$next_index|" "$agl_file"
+    else
+      echo "WORKER_PASS=$next_index" >>"$agl_file"
+    fi
+
+    update_last_stage "$agl_file" "worker"
+
+    if [[ ${#agent_args[@]} -gt 0 ]]; then
+      run_agent "$loop_dir" "$agl_file" "$prompt" "${agent_args[@]}"
+    else
+      print_commands "$prompt" "$worktree_rel"
+    fi
+  else
+    # --- No-plan branch: unchanged current behavior ---
+    [[ ${#agent_args[@]} -gt 0 ]] || die "Agent name is required. Usage: agl work <agent> [flags...]"
+
+    # Find the most recent prompt file
+    local prompts_dir="$loop_dir/prompts"
+    [[ -d "$prompts_dir" ]] || die "No prompts directory found in $loop_dir"
+
+    local latest_prompt
+    latest_prompt="$(find_latest_prompt_file "$prompts_dir")"
+    [[ -n "$latest_prompt" ]] || die "No prompt found in $prompts_dir"
+
+    run_agent "$loop_dir" "$agl_file" "$latest_prompt" "${agent_args[@]}"
+  fi
 }
 
 cmd_commit() {
@@ -1296,6 +1499,20 @@ cmd_commit() {
       msg="agl: $slug fixer"
     else
       msg="agl: $slug fixer-r${fix_round}"
+    fi
+  elif [[ "$last_stage" == "worker" ]]; then
+    local worker_pass worker_pass_num
+    worker_pass="$(read_meta_optional "$agl_file" WORKER_PASS)"
+    if [[ -n "$worker_pass" && ! "$worker_pass" =~ ^[0-9]+$ ]]; then
+      die "Invalid WORKER_PASS in .agl: $worker_pass"
+    fi
+    if [[ -n "$worker_pass" ]]; then
+      worker_pass_num=$((10#$worker_pass))
+    fi
+    if [[ -n "$worker_pass" && "$worker_pass_num" -gt 1 ]]; then
+      msg="agl: $slug worker-${worker_pass_num}"
+    else
+      msg="agl: $slug worker"
     fi
   else
     msg="agl: $slug $last_stage"

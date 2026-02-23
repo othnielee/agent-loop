@@ -12,7 +12,7 @@ The project has two concerns separated across two tools:
 
 Templates in `templates/` define four agent roles (worker, enhancer, reviewer, fixer) as Markdown files with `{{DOUBLE_BRACE}}` placeholders. Each template is self-contained with role constraints, context loading instructions, task description, output format, and a completion checklist.
 
-Deployment is handled by `deploy.sh` for initial bootstrap from a local checkout and `bin/agl-deploy.sh` for self-updating from GitHub. Both copy scripts to `~/bin/` and templates to `~/.config/solt/agent-loop/templates/`.
+Deployment is handled by `setup.sh` for initial bootstrap from a local checkout and `bin/agl-setup.sh` for self-updating from GitHub. Both copy scripts to `~/bin/` and templates to `~/.config/solt/agent-loop/templates/`.
 
 ## Coding Conventions
 

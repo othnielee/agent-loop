@@ -12,12 +12,12 @@ There is no build step, package manager, test framework, or linter. The project 
 
 **Deploy locally** (copies scripts to `~/bin/` and templates to `~/.config/solt/agent-loop/templates/`):
 ```bash
-bash deploy.sh
+bash setup.sh
 ```
 
 **Self-update from GitHub** (after initial deploy):
 ```bash
-agl-deploy
+agl-setup
 ```
 
 ## Architecture
@@ -83,7 +83,7 @@ work/agent-loop/<timestamp>-<slug>/
 └── worktree/         # git worktree (only present in internal fallback mode)
 ```
 
-The worktree is created outside the repo by default, under the base directory configured in `~/.config/solt/agent-loop/agl.toml` (seeded by `deploy.sh`). This prevents upward directory discovery from re-rooting into the primary checkout. The loop directory stays in-repo; only the worktree moves:
+The worktree is created outside the repo by default, under the base directory configured in `~/.config/solt/agent-loop/agl.toml` (seeded by `setup.sh`). This prevents upward directory discovery from re-rooting into the primary checkout. The loop directory stays in-repo; only the worktree moves:
 
 ```
 <worktree-base>/<framework>/<project-name>/<timestamp>-<slug>/
@@ -94,8 +94,8 @@ The `<framework>` level is derived from the repo's parent directory name (e.g. `
 
 ### Deployment
 
-- `deploy.sh` — Bootstrap from checkout. Copies `bin/*.sh` to `~/bin/` (strips `.sh` extension), copies templates to `~/.config/solt/agent-loop/templates/`.
-- `bin/agl-deploy.sh` — Self-updater. Reads config from `~/.config/solt/agent-loop/deploy.toml`, shallow-clones repo, deploys, scrubs PAT from remote URL immediately.
+- `setup.sh` — Bootstrap from checkout. Copies `bin/*.sh` to `~/bin/` (strips `.sh` extension), copies templates to `~/.config/solt/agent-loop/templates/`.
+- `bin/agl-setup.sh` — Self-updater. Reads config from `~/.config/solt/agent-loop/agl.toml`, shallow-clones repo, deploys, scrubs PAT from remote URL immediately.
 
 ## Coding Conventions
 

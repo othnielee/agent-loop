@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # ------------------------------------------------------------
-# deploy.sh — Bootstrap agent-loop from local checkout
+# setup.sh — Bootstrap agent-loop from local checkout
 #
 # Run this once from the repo root to deploy scripts and
 # templates to their runtime locations. After initial setup,
-# use `agl-deploy` to pull updates from GitHub.
+# use `agl-setup` to pull updates from GitHub.
 # ------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +23,7 @@ prepend_shebang_copy() {
       else { print sb; print; next }
     }
     { print }
-  ' "$src" > "$dest"
+  ' "$src" >"$dest"
   chmod 0755 "$dest"
 }
 
@@ -39,7 +39,7 @@ if [[ -d "$BIN_SRC" ]]; then
     base="$(basename "$f")"
     name="${base%.sh}"
     dest="$HOME/bin/$name"
-    tmp="/tmp/agl-deploy-$name.$$"
+    tmp="/tmp/agl-setup-$name.$$"
 
     echo "  - $base -> ~/bin/$name"
     prepend_shebang_copy "$f" "$tmp" "$TARGET_SHEBANG"
@@ -72,14 +72,17 @@ else
 fi
 
 # ------------------------------------------------------------
-# Create config file if it doesn't exist
+# Create agl config if it doesn't exist
 # ------------------------------------------------------------
-CONFIG_FILE="$HOME/.config/solt/agent-loop/deploy.toml"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "Creating default config at $CONFIG_FILE"
-  ensure_dir "$(dirname "$CONFIG_FILE")"
-  cat > "$CONFIG_FILE" <<'TOML'
-# agl-deploy configuration
+AGL_CONFIG="$HOME/.config/solt/agent-loop/agl.toml"
+if [[ ! -f "$AGL_CONFIG" ]]; then
+  echo "Creating default config at $AGL_CONFIG"
+  ensure_dir "$(dirname "$AGL_CONFIG")"
+  cat >"$AGL_CONFIG" <<'TOML'
+# agl configuration
+
+[worktree]
+base = "~/dev/worktrees"
 
 [github]
 user = "othnielee"
@@ -87,26 +90,11 @@ repo = "agent-loop"
 pat = ""
 ref = "main"
 TOML
-  echo "  - Set your PAT in $CONFIG_FILE for agl-deploy updates"
-fi
-
-# ------------------------------------------------------------
-# Create agl config if it doesn't exist
-# ------------------------------------------------------------
-AGL_CONFIG="$HOME/.config/solt/agent-loop/agl.toml"
-if [[ ! -f "$AGL_CONFIG" ]]; then
-  echo "Creating default config at $AGL_CONFIG"
-  ensure_dir "$(dirname "$AGL_CONFIG")"
-  cat > "$AGL_CONFIG" <<'TOML'
-# agl configuration
-
-[worktree]
-base = "~/dev/worktrees"
-TOML
+  echo "  - Set your PAT in $AGL_CONFIG for agl-setup updates"
 fi
 
 echo "Done."
 echo ""
 echo "Commands available:"
 echo "  agl          - Agent loop scaffolding"
-echo "  agl-deploy   - Self-updater (set PAT in $CONFIG_FILE first)"
+echo "  agl-setup    - Self-updater (set PAT in $AGL_CONFIG first)"

@@ -2,38 +2,66 @@
 set -euo pipefail
 
 # ------------------------------------------------------------
-# agl-deploy — Self-updater for agent-loop
+# agl-setup — Setup agent-loop from GitHub
 #
 # Clones the agent-loop repo, deploys bin/ scripts to ~/bin/
 # and templates to ~/.config/solt/agent-loop/templates/.
 # ------------------------------------------------------------
 
-CONFIG_FILE="$HOME/.config/solt/agent-loop/deploy.toml"
+CONFIG_FILE="$HOME/.config/solt/agent-loop/agl.toml"
 TEMPLATE_DEST="$HOME/.config/solt/agent-loop/templates"
 TARGET_SHEBANG='#!/usr/bin/env bash'
 
 # ------------------------------------------------------------
-# Config reader (simple TOML)
+# Config reader (section-scanning TOML parser)
 # ------------------------------------------------------------
-get_config() {
-  local section="$1" key="$2"
-  if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo ""
-    return
-  fi
-  sed -n "/^\[$section\]/,/^\[/p" "$CONFIG_FILE" |
-    grep "^$key" | head -1 |
-    cut -d'=' -f2- | tr -d ' "' | tr -d "'" |
-    sed 's|^~/|'"$HOME"'/|' || true
+read_config_toml_string() {
+  local target_section="$1" target_key="$2"
+  [[ -f "$CONFIG_FILE" ]] || return 0
+
+  local in_section=false
+  local line
+  while IFS= read -r line; do
+    # Skip blank lines and comments
+    [[ -z "$line" || "$line" == "#"* ]] && continue
+
+    # Section headers
+    if [[ "$line" == "["*"]" ]]; then
+      if [[ "$line" == "[$target_section]" ]]; then
+        in_section=true
+      else
+        in_section=false
+      fi
+      continue
+    fi
+
+    if [[ "$in_section" == true ]]; then
+      [[ "$line" == *=* ]] || continue
+      local cfg_key="${line%%=*}"
+      cfg_key="$(printf '%s' "$cfg_key" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      [[ "$cfg_key" == "$target_key" ]] || continue
+
+      local value_part="${line#*=}"
+      value_part="$(printf '%s' "$value_part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+      # Must be exactly "..." (double-quoted, nothing else on line)
+      if [[ "$value_part" =~ ^\"[^\"]*\"$ ]]; then
+        # Strip quotes
+        local cfg_value="${value_part:1:${#value_part}-2}"
+        printf '%s' "$cfg_value"
+      fi
+      return 0
+    fi
+  done < "$CONFIG_FILE"
 }
 
 # ------------------------------------------------------------
 # Load config with fallbacks
 # ------------------------------------------------------------
-GH_USER="$(get_config github user)"
-GH_REPO_NAME="$(get_config github repo)"
-PAT="$(get_config github pat)"
-REF="$(get_config github ref)"
+GH_USER="$(read_config_toml_string github user)"
+GH_REPO_NAME="$(read_config_toml_string github repo)"
+PAT="$(read_config_toml_string github pat)"
+REF="$(read_config_toml_string github ref)"
 
 [[ -z "$GH_USER" ]] && GH_USER="othnielee"
 [[ -z "$GH_REPO_NAME" ]] && GH_REPO_NAME="agent-loop"
@@ -52,7 +80,7 @@ Config file: $CONFIG_FILE
 
 Options:
   --pat         Override PAT from config (or set in config file)
-  --ref         Branch/tag/commit to clone (default: main)
+  --ref         Branch/tag to clone (default: main)
   --keep-temp   Keep temp dir for debugging
 EOF
 }
@@ -133,7 +161,7 @@ have_cmd git || {
   exit 1
 }
 
-WORKDIR="$(mktemp -d)"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agl-setup.XXXXXX")"
 if ((!KEEP_TEMP)); then
   trap 'rm -rf "$WORKDIR"' EXIT
 fi
@@ -206,6 +234,12 @@ if [[ ! -f "$AGL_CONFIG" ]]; then
 
 [worktree]
 base = "~/dev/worktrees"
+
+[github]
+user = "othnielee"
+repo = "agent-loop"
+pat = ""
+ref = "main"
 TOML
 fi
 

@@ -83,12 +83,12 @@ Examples:
   agl work --plan work/planning/subplan-01.md         # scaffold only (print commands)
   agl work claude                          # run agent with most recent prompt
   agl commit
-  agl enhance claude                       # scaffold + run
+  agl enhance codex                        # scaffold + run
   agl commit
   agl review                               # scaffold only (interactive)
   agl fix claude --fast                    # scaffold + run with flags
   agl commit
-  agl merge add-auth                        # manual message
+  agl merge add-auth                       # manual message
   agl merge add-auth --agent claude --fast # draft + merge
   agl drop add-auth                        # remove worktree + branch
   agl drop add-auth --all                  # also remove loop directory
@@ -627,7 +627,7 @@ read_config_worktree_base() {
       printf '%s' "$cfg_value"
       return 0
     fi
-  done < "$config_file"
+  done <"$config_file"
 }
 
 # Derive a framework name from the repo's parent directory.
@@ -981,7 +981,7 @@ cmd_init() {
   local worktree_mode_val="internal" worktree_base_abs=""
 
   if [[ -n "$worktree_base" ]]; then
-    # External worktree mode (default — base seeded by deploy.sh)
+    # External worktree mode (default — base seeded by setup.sh)
 
     # Expand ~/
     # shellcheck disable=SC2088  # intentional literal ~/
@@ -1073,7 +1073,7 @@ cmd_init() {
   # Write .agl metadata (PLAN_PATH stored as relative for portability in metadata)
   local loop_dir_rel="${loop_dir#"$main_root"/}"
   local rel_plan_path="${abs_plan_path#"$main_root"/}"
-  if ! cat >"$loop_dir/.agl" <<EOF
+  if ! cat >"$loop_dir/.agl" <<EOF; then
 FEATURE_SLUG=$slug
 PLAN_PATH=$rel_plan_path
 DATE=$date
@@ -1083,18 +1083,16 @@ WORKTREE=$worktree_agl_val
 MAIN_ROOT=$main_root
 LAST_STAGE=worker
 EOF
-  then
     cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
     die "Failed to write loop metadata: $loop_dir/.agl"
   fi
 
   # Append worktree mode metadata (present for external, absent for internal fallback)
   if [[ "$worktree_mode_val" == "external" ]]; then
-    if ! cat >>"$loop_dir/.agl" <<EOF
+    if ! cat >>"$loop_dir/.agl" <<EOF; then
 WORKTREE_MODE=external
 WORKTREE_BASE=$worktree_base_abs
 EOF
-    then
       cleanup_init_artifacts "$worktree_mode_val" "$main_root" "$loop_dir" "$branch_name" "$worktree_abs_for_git" "$external_wt_dir"
       die "Failed to write external worktree metadata: $loop_dir/.agl"
     fi

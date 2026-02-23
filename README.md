@@ -8,7 +8,7 @@ Scaffolding tool and templates for multi-agent development workflows. `agl` gene
 
 ```bash
 # Bootstrap (from repo checkout)
-./deploy.sh
+./setup.sh
 
 # Ensure work/agent-loop/ is in .gitignore
 echo "work/agent-loop/" >> .gitignore
@@ -22,7 +22,7 @@ agl work claude
 agl commit
 
 # Enhance
-agl enhance claude
+agl enhance codex
 agl commit
 
 # Review (read-only)
@@ -129,7 +129,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 
 ### Worktree Workflow
 
-`agl init` creates a loop directory at `work/agent-loop/<timestamp>-<slug>/` in the primary tree with a git worktree on a dedicated branch `agl/<slug>`. The worktree is created outside the repository at `<base>/<framework>/<project>/<timestamp>-<slug>/worktree`, which prevents upward directory discovery from re-rooting into the primary checkout. The bootstrap process (`deploy.sh`) seeds `~/.config/solt/agent-loop/agl.toml` with a default worktree base, so worktrees work out of the box. The base can also be set via `--worktree-base` or `AGL_WORKTREE_BASE`. If no worktree base is configured at all (config removed, no env, no flag), `agl` falls back to an internal worktree at `<loop_dir>/worktree/`. The loop directory (prompts, output, context) always remains in-repo. The lifecycle is:
+`agl init` creates a loop directory at `work/agent-loop/<timestamp>-<slug>/` in the primary tree with a git worktree on a dedicated branch `agl/<slug>`. The worktree is created outside the repository at `<base>/<framework>/<project>/<timestamp>-<slug>/worktree`, which prevents upward directory discovery from re-rooting into the primary checkout. The bootstrap process (`setup.sh`) seeds `~/.config/solt/agent-loop/agl.toml` with a default worktree base, so worktrees work out of the box. The base can also be set via `--worktree-base` or `AGL_WORKTREE_BASE`. If no worktree base is configured at all (config removed, no env, no flag), `agl` falls back to an internal worktree at `<loop_dir>/worktree/`. The loop directory (prompts, output, context) always remains in-repo. The lifecycle is:
 
 1. **`agl init <slug>`** — creates loop directory, branch, worktree, and worker prompt
 2. **`agl work <agent>`** — runs the agent with the most recent prompt in the worktree
@@ -330,22 +330,21 @@ The templates enforce strict role boundaries:
 ```bash
 git clone <repo-url> ~/dev/bash/agent-loop
 cd ~/dev/bash/agent-loop
-./deploy.sh
+./setup.sh
 ```
 
 This deploys:
 - `bin/agl.sh` -> `~/bin/agl`
-- `bin/agl-deploy.sh` -> `~/bin/agl-deploy`
+- `bin/agl-setup.sh` -> `~/bin/agl-setup`
 - `templates/*.md` -> `~/.config/solt/agent-loop/templates/`
-- Creates `~/.config/solt/agent-loop/deploy.toml` if it doesn't exist
-- Creates `~/.config/solt/agent-loop/agl.toml` if it doesn't exist (sets default worktree base)
+- Creates `~/.config/solt/agent-loop/agl.toml` if it doesn't exist (worktree base + GitHub config)
 
 ### Updates
 
-After setting your PAT in `~/.config/solt/agent-loop/deploy.toml`:
+After setting your PAT in `~/.config/solt/agent-loop/agl.toml`:
 
 ```bash
-agl-deploy
+agl-setup
 ```
 
 This clones the latest from GitHub and redeploys everything.

@@ -1,14 +1,14 @@
 # Repository Guidelines
 
-**Agent Loop** is a CLI tool for multi-agent development workflows. It generates timestamped prompt directories, fills Markdown templates with context, and either prints or executes `agw` commands. Built entirely in Bash with no external dependencies beyond standard POSIX utilities and git. The project targets Linux (Bash) and macOS (Zsh) — all scripts must work correctly on both platforms.
+**Agent Loop** is a CLI tool for multi-agent development workflows. It generates timestamped prompt directories, fills Markdown templates with context, and either prints or executes `agr` commands. Built entirely in Bash with no external dependencies beyond standard POSIX utilities and git. The project targets Linux (Bash) and macOS (Zsh) — all scripts must work correctly on both platforms.
 
 ## Architecture
 
 The project has two concerns separated across two tools:
 
-**`agl` (this repo)** scaffolds and runs agent loops. All logic lives in a single script `bin/agl.sh` organized as a set of command functions (`cmd_init`, `cmd_enhance`, `cmd_review`, `cmd_fix`, `cmd_work`, `cmd_commit`, `cmd_merge`, `cmd_drop`) dispatched from a `case` block at the bottom. Each command function creates or locates a timestamped loop directory under `work/agent-loop/`, fills `{{PLACEHOLDER}}` values in Markdown templates using `sed`, writes the result to the loop's `prompts/` directory, and either prints the ready-to-run command or invokes `agw` directly via `exec`.
+**`agl` (this repo)** scaffolds and runs agent loops. All logic lives in a single script `bin/agl.sh` organized as a set of command functions (`cmd_init`, `cmd_enhance`, `cmd_review`, `cmd_fix`, `cmd_work`, `cmd_commit`, `cmd_merge`, `cmd_drop`) dispatched from a `case` block at the bottom. Each command function creates or locates a timestamped loop directory under `work/agent-loop/`, fills `{{PLACEHOLDER}}` values in Markdown templates using `sed`, writes the result to the loop's `prompts/` directory, and either prints the ready-to-run command or invokes `agr` directly via `exec`.
 
-**`agw` (external, not in this repo)** runs agents with model selection, streaming output, and read-only mode enforcement. `agl` can invoke `agw` as a pass-through (`agl work`, `agl enhance claude`, etc.) or print the command for manual execution.
+**`agr` (external, not in this repo)** runs agents with model selection, streaming output, and read-only mode enforcement. `agl` can invoke `agr` as a pass-through (`agl work`, `agl enhance claude`, etc.) or print the command for manual execution.
 
 Templates in `templates/` define four agent roles (worker, enhancer, reviewer, fixer) as Markdown files with `{{DOUBLE_BRACE}}` placeholders. Each template is self-contained with role constraints, context loading instructions, task description, output format, and a completion checklist.
 

@@ -5,7 +5,7 @@ set -euo pipefail
 # agl — Agent Loop scaffolding tool
 #
 # Generates loop directories, fills template placeholders, and
-# prints or executes agw commands.
+# prints or executes agr commands.
 # ------------------------------------------------------------
 
 TEMPLATE_DIR="$HOME/.config/solt/agent-loop/templates"
@@ -38,7 +38,7 @@ Work options:
   --plan <path>         Scaffold a new worker prompt with this plan
   --task <description>  Task description (default: Implement the plan.)
   --context <paths>     Additional context paths (default: None)
-  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agw)
+  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agr)
                         Agent is required when --plan is not used.
 
 Commit options:
@@ -49,7 +49,7 @@ Enhance options:
   --context <paths>     Additional context paths (default: None)
   --commits <hashes>    Relevant commit hashes (default: None)
   --instructions <text> Additional instructions (default: None)
-  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agw)
+  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agr)
 
 Review options:
   --dir <path>          Loop directory (default: most recent)
@@ -57,18 +57,18 @@ Review options:
   --context <paths>     Additional context paths (default: None)
   --commits <hashes>    Relevant commit hashes (default: None)
   --checklist <text>    Review checklist (default: None)
-  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agw)
+  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agr)
 
 Fix options:
   --dir <path>          Loop directory (default: most recent)
   --context <paths>     Additional context paths (default: None)
-  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agw)
+  [<agent> [flags...]]  Run agent after scaffolding (flags pass through to agr)
 
 Merge options:
   [<slug>]              Feature slug to merge (default: most recent loop)
   --agent <agent> [...] Agent name and flags for commit-message drafting
                         Place --dir/--no-delete before --agent.
-                        Args after --agent <agent> pass through to agw.
+                        Args after --agent <agent> pass through to agr.
   --dir <path>          Loop directory (default: most recent)
   --no-delete           Preserve worktree and branch after merge
 
@@ -691,7 +691,7 @@ require_repo_membership() {
     die "Worktree does not belong to current repo (git common-dir mismatch)"
 }
 
-# Print the prompt path and ready-to-run agw commands.
+# Print the prompt path and ready-to-run agr commands.
 # When worktree_path is provided, prints (cd ...) wrapped commands with absolute
 # prompt path. worktree_path is absolute (default) or relative (internal fallback).
 print_commands() {
@@ -723,24 +723,24 @@ print_commands() {
     echo "Prompt: $rel_path"
     echo ""
     echo "Run:"
-    echo "  (cd \"$worktree_abs\" && agw claude \"$prompt_abs\")"
-    echo "  (cd \"$worktree_abs\" && agw codex  \"$prompt_abs\")"
+    echo "  (cd \"$worktree_abs\" && agr claude \"$prompt_abs\")"
+    echo "  (cd \"$worktree_abs\" && agr codex  \"$prompt_abs\")"
     return 0
   fi
 
   echo "Prompt: $rel_path"
   echo ""
   echo "Run:"
-  echo "  agw claude $rel_path"
-  echo "  agw codex  $rel_path"
+  echo "  agr claude $rel_path"
+  echo "  agr codex  $rel_path"
 }
 
-# Execute agw in the worktree. Reads WORKTREE from .agl, resolves paths,
-# cds into the worktree, and execs agw. Does not return.
+# Execute agr in the worktree. Reads WORKTREE from .agl, resolves paths,
+# cds into the worktree, and execs agr. Does not return.
 run_agent() {
   local loop_dir="$1" agl_file="$2" prompt_path="$3"
   shift 3
-  # Remaining args: agent name and flags for agw
+  # Remaining args: agent name and flags for agr
 
   local root
   root="$(project_root)"
@@ -777,14 +777,14 @@ run_agent() {
   require_repo_membership "$worktree_abs" "$root"
 
   cd "$worktree_abs"
-  exec agw "$@" "$prompt_abs"
+  exec agr "$@" "$prompt_abs"
 }
 
-# Execute agw in a specific directory and return to caller.
+# Execute agr in a specific directory and return to caller.
 run_agent_once() {
   local run_dir="$1" prompt_path="$2"
   shift 2
-  # Remaining args: agent name and flags for agw
+  # Remaining args: agent name and flags for agr
 
   local prompt_abs
   case "$prompt_path" in
@@ -798,7 +798,7 @@ run_agent_once() {
 
   (
     cd "$run_dir_abs"
-    agw "$@" "$prompt_abs" >&2
+    agr "$@" "$prompt_abs" >&2
   )
 }
 

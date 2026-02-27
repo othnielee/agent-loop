@@ -1,6 +1,6 @@
 # Agent Loop
 
-Scaffolding tool and templates for multi-agent development workflows. `agl` generates loop directories, fills template placeholders, and runs agents via `agw`. Language-agnostic and platform-agnostic (works with Claude, Codex, Gemini, etc.).
+Scaffolding tool and templates for multi-agent development workflows. `agl` generates loop directories, fills template placeholders, and runs agents via `agr`. Language-agnostic and platform-agnostic (works with Claude, Codex, Gemini, etc.).
 
 ---
 
@@ -39,7 +39,7 @@ agl merge add-auth --agent claude
 agl drop add-auth
 ```
 
-`agl` scaffolds prompts and runs agents via `agw` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agw` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. `agl merge` opens the normal commit editor by default; pass `--agent` to draft a commit message and open `git commit -e -F` with that draft. `agl drop` removes the worktree and branch without merging.
+`agl` scaffolds prompts and runs agents via `agr` in an isolated git worktree. Commands like `agl work`, `agl enhance claude`, and `agl fix claude` invoke `agr` directly. Without an agent name, `agl enhance`, `agl review`, and `agl fix` print the command for manual execution. `agl merge` opens the normal commit editor by default; pass `--agent` to draft a commit message and open `git commit -e -F` with that draft. `agl drop` removes the worktree and branch without merging.
 
 ---
 
@@ -73,7 +73,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 | Option | Description |
 |--------|-------------|
 | `--dir <path>` | Loop directory (default: most recent) |
-| `<agent> [flags...]` | Agent name and flags (passed through to agw) |
+| `<agent> [flags...]` | Agent name and flags (passed through to agr) |
 
 ### Commit Options
 
@@ -89,7 +89,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 | `--context <paths>` | Additional context paths |
 | `--commits <hashes>` | Relevant commit hashes |
 | `--instructions <text>` | Additional instructions |
-| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agw) |
+| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agr) |
 
 ### Review Options
 
@@ -100,7 +100,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 | `--context <paths>` | Additional context paths |
 | `--commits <hashes>` | Relevant commit hashes |
 | `--checklist <text>` | Review checklist |
-| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agw) |
+| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agr) |
 
 ### Fix Options
 
@@ -108,7 +108,7 @@ agl drop [<slug>]                       Remove worktree and branch (abandon work
 |--------|-------------|
 | `--dir <path>` | Loop directory (default: most recent) |
 | `--context <paths>` | Additional context paths |
-| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agw) |
+| `[<agent> [flags...]]` | Run agent after scaffolding (flags pass through to agr) |
 
 ### Merge Options
 

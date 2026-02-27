@@ -4,7 +4,7 @@ This document provides a technical overview of the **agent-loop** project, desig
 
 ## Project Overview
 
-`agl` is a pure Bash CLI tool for multi-agent development workflows. It generates timestamped prompt files from Markdown templates and can invoke `agw` directly as a pass-through. The companion tool `agw` (external, at `~/bin/agw`) handles actual agent execution with model selection, streaming, and read-only mode.
+`agl` is a pure Bash CLI tool for multi-agent development workflows. It generates timestamped prompt files from Markdown templates and can invoke `agr` directly as a pass-through. The companion tool `agr` (external, at `~/bin/agr`) handles actual agent execution with model selection, streaming, and read-only mode.
 
 ## Development
 
@@ -24,8 +24,8 @@ agl-setup
 
 ### Two-tool separation
 
-- **`agl` (this repo)** — Scaffolds and runs agent loops. Creates loop directories, generates prompts, tracks metadata. Can invoke `agw` directly (`agl work`, `agl enhance claude`, etc.) or print the command for manual execution.
-- **`agw` (external)** — Runs agents (Claude, Codex) with model selection, streaming, read-only mode.
+- **`agl` (this repo)** — Scaffolds and runs agent loops. Creates loop directories, generates prompts, tracks metadata. Can invoke `agr` directly (`agl work`, `agl enhance claude`, etc.) or print the command for manual execution.
+- **`agr` (external)** — Runs agents (Claude, Codex) with model selection, streaming, read-only mode.
 
 ### Entry point: `bin/agl.sh`
 

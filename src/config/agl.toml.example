@@ -1,0 +1,12 @@
+# agl-setup configuration
+#
+# Usage: agl-setup [--pat TOKEN] [--ref REF]
+
+[worktree]
+base = "~/dev/worktrees"
+
+[github]
+user = ""
+repo = ""
+pat = ""
+ref = "main"

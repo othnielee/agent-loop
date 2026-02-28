@@ -63,8 +63,6 @@ GH_REPO_NAME="$(read_config_toml_string github repo)"
 PAT="$(read_config_toml_string github pat)"
 REF="$(read_config_toml_string github ref)"
 
-[[ -z "$GH_USER" ]] && GH_USER="othnielee"
-[[ -z "$GH_REPO_NAME" ]] && GH_REPO_NAME="agent-loop"
 [[ -z "$REF" ]] && REF="main"
 
 # Environment variable override
@@ -75,11 +73,14 @@ SKIP_CONFIG=0
 
 usage() {
   cat <<EOF
-Usage: $0 [--pat TOKEN] [--ref REF] [--no-config] [--keep-temp]
+Usage: $0 [--user USER] [--repo REPO] [--pat TOKEN] [--ref REF]
+       [--no-config] [--keep-temp]
 
 Config file: $CONFIG_FILE
 
 Options:
+  --user        GitHub username (overrides config)
+  --repo        GitHub repo name (overrides config)
   --pat         Override PAT from config (or set in config file)
   --ref         Branch/tag to clone (default: main)
   --no-config   Skip creating config file if it doesn't exist
@@ -89,6 +90,22 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+  --user)
+    [[ $# -ge 2 && "$2" != -* ]] || {
+      echo "Error: Missing value for --user" >&2
+      exit 1
+    }
+    GH_USER="$2"
+    shift 2
+    ;;
+  --repo)
+    [[ $# -ge 2 && "$2" != -* ]] || {
+      echo "Error: Missing value for --repo" >&2
+      exit 1
+    }
+    GH_REPO_NAME="$2"
+    shift 2
+    ;;
   --pat)
     [[ $# -ge 2 && "$2" != -* ]] || {
       echo "Error: Missing value for --pat" >&2
@@ -125,28 +142,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ------------------------------------------------------------
-# Create agl config if it doesn't exist
-# ------------------------------------------------------------
-if [[ "$SKIP_CONFIG" -eq 0 && ! -f "$CONFIG_FILE" ]]; then
-  mkdir -p "$(dirname "$CONFIG_FILE")"
-  cat >"$CONFIG_FILE" <<'TOML'
-# agl configuration
-
-[worktree]
-base = "~/dev/worktrees"
-
-[github]
-user = "othnielee"
-repo = "agent-loop"
-pat = ""
-ref = "main"
-TOML
-  echo "Created config at $CONFIG_FILE" >&2
-fi
-
 if [[ -z "${PAT:-}" ]]; then
   echo "No PAT provided. Add one to $CONFIG_FILE for automatic use, or pass --pat TOKEN." >&2
+  exit 1
+fi
+
+if [[ -z "${GH_USER:-}" || -z "${GH_REPO_NAME:-}" ]]; then
+  echo "Error: github user and repo must be set in $CONFIG_FILE." >&2
   exit 1
 fi
 
@@ -210,7 +212,7 @@ git -C "$SRC_DIR" remote set-url origin "https://github.com/${GH_USER}/${GH_REPO
 # ------------------------------------------------------------
 # Deploy bin/ scripts -> ~/bin/
 # ------------------------------------------------------------
-BIN_SRC="$SRC_DIR/bin"
+BIN_SRC="$SRC_DIR/src/bin"
 if [[ -d "$BIN_SRC" ]]; then
   echo "Deploying bin/ -> \$HOME/bin"
   ensure_dir "$HOME/bin"
@@ -233,7 +235,7 @@ fi
 # ------------------------------------------------------------
 # Deploy templates/ -> ~/.config/solt/agent-loop/templates/
 # ------------------------------------------------------------
-TPL_SRC="$SRC_DIR/templates"
+TPL_SRC="$SRC_DIR/src/templates"
 if [[ -d "$TPL_SRC" ]]; then
   echo "Deploying templates/ -> $TEMPLATE_DEST"
   ensure_dir "$TEMPLATE_DEST"
@@ -246,6 +248,18 @@ if [[ -d "$TPL_SRC" ]]; then
   shopt -u nullglob
 else
   echo "No templates/ directory found in repository."
+fi
+
+# ------------------------------------------------------------
+# Install config example (only if real file doesn't exist)
+# ------------------------------------------------------------
+if ((!SKIP_CONFIG)); then
+  CONFIG_EXAMPLE="$SRC_DIR/src/config/agl.toml.example"
+  if [[ -f "$CONFIG_EXAMPLE" && ! -f "$CONFIG_FILE" ]]; then
+    ensure_dir "$(dirname "$CONFIG_FILE")"
+    install -m 0644 "$CONFIG_EXAMPLE" "$CONFIG_FILE"
+    echo "Created $CONFIG_FILE (from example)"
+  fi
 fi
 
 echo "Done."

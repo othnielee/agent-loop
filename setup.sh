@@ -30,7 +30,7 @@ prepend_shebang_copy() {
 # ------------------------------------------------------------
 # Deploy bin/ scripts -> ~/bin/
 # ------------------------------------------------------------
-BIN_SRC="$SCRIPT_DIR/bin"
+BIN_SRC="$SCRIPT_DIR/src/bin"
 if [[ -d "$BIN_SRC" ]]; then
   echo "Deploying bin/ -> \$HOME/bin"
   ensure_dir "$HOME/bin"
@@ -55,7 +55,7 @@ fi
 # ------------------------------------------------------------
 # Deploy templates/ -> ~/.config/solt/agent-loop/templates/
 # ------------------------------------------------------------
-TPL_SRC="$SCRIPT_DIR/templates"
+TPL_SRC="$SCRIPT_DIR/src/templates"
 if [[ -d "$TPL_SRC" ]]; then
   echo "Deploying templates/ -> $TEMPLATE_DEST"
   ensure_dir "$TEMPLATE_DEST"
@@ -72,25 +72,14 @@ else
 fi
 
 # ------------------------------------------------------------
-# Create agl config if it doesn't exist
+# Install config example (only if real file doesn't exist)
 # ------------------------------------------------------------
+CONFIG_SRC="$SCRIPT_DIR/src/config"
 AGL_CONFIG="$HOME/.config/solt/agent-loop/agl.toml"
-if [[ ! -f "$AGL_CONFIG" ]]; then
-  echo "Creating default config at $AGL_CONFIG"
+if [[ -f "$CONFIG_SRC/agl.toml.example" && ! -f "$AGL_CONFIG" ]]; then
   ensure_dir "$(dirname "$AGL_CONFIG")"
-  cat >"$AGL_CONFIG" <<'TOML'
-# agl configuration
-
-[worktree]
-base = "~/dev/worktrees"
-
-[github]
-user = "othnielee"
-repo = "agent-loop"
-pat = ""
-ref = "main"
-TOML
-  echo "  - Set your PAT in $AGL_CONFIG for agl-setup updates"
+  install -m 0644 "$CONFIG_SRC/agl.toml.example" "$AGL_CONFIG"
+  echo "Created $AGL_CONFIG (from example)"
 fi
 
 echo "Done."

@@ -25,10 +25,7 @@ You are the **implementing agent**. Your job is to produce working code or artif
 - Run code formatters (e.g. prettier, black, cargo fmt) unless explicitly allowed by `AGENTS.md`
 - Use handoff or report formats from other files — use ONLY the format in Section 4 of this brief
 
-**If you encounter a blocker or ambiguity:**
-1. Stop implementation
-2. Document the issue clearly
-3. Ask for clarification before proceeding
+**If you encounter a blocker or ambiguity:** Stop. Document the issue clearly and ask for clarification before proceeding.
 
 ---
 

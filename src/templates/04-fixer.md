@@ -25,10 +25,7 @@ You are the **fixing agent**. Your job is to address the specific issues identif
 - Run code formatters (e.g. prettier, black, cargo fmt) unless explicitly allowed by `AGENTS.md`
 - Use handoff or report formats from other files — use ONLY the format in Section 4 of this brief
 
-**If a prescribed change is ambiguous or contradictory:**
-1. Stop
-2. Document the issue clearly
-3. Move on to the next finding - do not guess
+**If a prescribed change is ambiguous or contradictory:** Stop. Document the issue. Move on to the next finding — do not guess.
 
 ---
 

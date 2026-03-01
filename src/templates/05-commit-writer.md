@@ -20,14 +20,13 @@ You MUST NOT:
 - Edit source code or project files
 - Write output to any file other than `{{COMMIT_MESSAGE_PATH}}`
 
-If the staged diff is empty or unreadable:
-1. Stop
-2. Write a short failure note to `{{COMMIT_MESSAGE_PATH}}`
-3. Exit
+If the staged diff is empty or unreadable: stop, write a short failure note to `{{COMMIT_MESSAGE_PATH}}`, and exit.
 
 ---
 
 ## 2. Context
+
+Load these resources before starting:
 
 | Resource | Path |
 |----------|------|

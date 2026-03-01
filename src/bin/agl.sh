@@ -1391,6 +1391,8 @@ cmd_review() {
   local prompt="$loop_dir/prompts/$prompt_name"
   mkdir -p "$loop_dir/prompts"
 
+  local review_output_path="$abs_output_dir/$review_output"
+
   sed \
     -e "s|{{DATE}}|$(sed_escape "$date")|g" \
     -e "s|{{FEATURE_SLUG}}|$(sed_escape "$slug")|g" \
@@ -1402,13 +1404,8 @@ cmd_review() {
     -e "s|{{COMMIT_HASHES}}|$(sed_escape "$commit_hashes")|g" \
     -e "s|{{REVIEW_CHECKLIST}}|$(sed_escape "$checklist")|g" \
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$abs_output_dir")|g" \
+    -e "s|{{REVIEW_OUTPUT_PATH}}|$(sed_escape "$review_output_path")|g" \
     "$template" >"$prompt"
-
-  # If round > 1, fix the output filename in the generated prompt
-  if [[ "$round" -gt 1 ]]; then
-    # Only rewrite the output instruction line; do not rewrite paths in Other Context.
-    sed_inplace "/^Write your findings report to / s|REVIEW-$(sed_escape "$slug")\\.md|$(sed_escape "$review_output")|g" "$prompt"
-  fi
 
   update_last_stage "$agl_file" "reviewer"
 

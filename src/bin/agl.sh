@@ -1226,6 +1226,10 @@ cmd_enhance() {
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$abs_output_dir")|g" \
     "$template" >"$prompt"
 
+  if [[ "$instructions" == "None" ]]; then
+    sed_inplace '/^None$/{N;d}' "$prompt"
+  fi
+
   update_last_stage "$agl_file" "enhancer"
 
   if [[ ${#agent_args[@]} -gt 0 ]]; then
@@ -1406,6 +1410,11 @@ cmd_review() {
     -e "s|{{OUTPUT_DIR}}|$(sed_escape "$abs_output_dir")|g" \
     -e "s|{{REVIEW_OUTPUT_PATH}}|$(sed_escape "$review_output_path")|g" \
     "$template" >"$prompt"
+
+  if [[ "$checklist" == "None" ]]; then
+    awk '/^### Review Checklist$/{skip=1;next} skip && /^### /{skip=0} skip{next} {print}' \
+      "$prompt" > "${prompt}.tmp" && mv "${prompt}.tmp" "$prompt"
+  fi
 
   update_last_stage "$agl_file" "reviewer"
 

@@ -70,7 +70,7 @@ Load these resources before starting:
 | Other Context | {{OTHER_CONTEXT}} |
 | Commits | {{COMMIT_HASHES}} |
 
-If FILE_PATHS is None, derive review scope from the commits and handoff report above.
+If no files are listed above, derive review scope from the commits and handoff report.
 
 ---
 

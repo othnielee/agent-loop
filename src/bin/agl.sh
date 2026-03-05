@@ -1418,6 +1418,18 @@ cmd_review() {
 
   update_last_stage "$agl_file" "reviewer"
 
+  # Reviews need less horsepower — default to medium effort
+  if [[ ${#agent_args[@]} -gt 0 ]]; then
+    local has_effort=0
+    local arg
+    for arg in "${agent_args[@]}"; do
+      [[ "$arg" == "-e" ]] && has_effort=1
+    done
+    if [[ "$has_effort" -eq 0 ]]; then
+      agent_args=("${agent_args[0]}" "-e" "medium" "${agent_args[@]:1}")
+    fi
+  fi
+
   if [[ ${#agent_args[@]} -gt 0 ]]; then
     run_agent "$loop_dir" "$agl_file" "$prompt" "${agent_args[@]}"
   else
